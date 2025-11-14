@@ -1,0 +1,21 @@
+generatorName: python
+packageName: unikraft_cloud_platform
+projectName: unikraft-cloud-platform
+packageVersion: 0.6.0
+gitRepoId: python-sdk
+gitUserId: unikraft-cloud
+
+additionalProperties:
+  library: urllib3
+  packageName: unikraft_cloud_platform
+  projectName: unikraft-cloud-platform
+  packageVersion: 0.6.0
+
+globalProperties:
+  models: ""
+  apis: ""
+  modelTests: "false"
+  modelDocs: "false"
+  apiTests: "false"
+  apiDocs: "false"
+  supportingFiles: __init__.py,configuration.py,api_client.py,exceptions.py,rest.py,api_response.py

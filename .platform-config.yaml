@@ -1,4 +1,0 @@
-project_name_override: unikraft-cloud-platform
-package_name_override: unikraft_cloud_platform
-literal_enums: true
-docstrings_on_attributes: true

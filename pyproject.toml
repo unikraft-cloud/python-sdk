@@ -1,7 +1,7 @@
 [project]
 name = "unikraft-cloud-platform"
-version = "v1.0.0"
-description = "A client library for accessing Unikraft Cloud Platform API"
+version = "0.6.0"
+description = "A client library for accessing Unikraft Cloud Platform"
 authors = []
 requires-python = ">=3.9,<4.0"
 readme = "README.md"
