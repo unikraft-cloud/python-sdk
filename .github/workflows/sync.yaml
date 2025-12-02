@@ -34,7 +34,6 @@ jobs:
         CHANNEL: ${{ inputs.channel }}
       run: |
         make generate
-        make fmt
 
     - name: Show diff
       shell: bash
