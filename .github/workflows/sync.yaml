@@ -25,8 +25,15 @@ jobs:
       with:
         ref: ${{ inputs.channel }}
 
+    - name: Install Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: stable
+
     - name: Install uv
-      uses: astral-sh/setup-uv@v7
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
 
     - name: Generate
       shell: bash
@@ -56,5 +63,7 @@ jobs:
         branch: ${{ steps.id.outputs.name }}
         committer: Unikraft Bot <monkey@unikraft.io>
         author: Unikraft Bot <monkey@unikraft.io>
-        add-paths: controlplane,platform
+        # The whole generated package, so a module the spec drops is removed and
+        # a tag it adds is not left out of the pull request.
+        add-paths: src/unikraft_cloud/api
         signoff: true
