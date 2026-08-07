@@ -8,13 +8,13 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import AsyncIterator, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from types import TracebackType
 from typing import Any, TypeVar
 from urllib.parse import quote
 
 import httpx
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from typing_extensions import NotRequired, Self, TypedDict
 
 from .errors import (
@@ -26,12 +26,14 @@ from .errors import (
 )
 
 __all__ = [
+    "UNSET",
     "ApiClient",
     "ApiClientConfig",
     "CallOptions",
     "CommaSeparated",
     "QueryValue",
     "TimeoutOption",
+    "Unset",
     "comma_separated",
 ]
 
@@ -51,16 +53,20 @@ def default_timeout() -> httpx.Timeout:
     return httpx.Timeout(None, connect=10.0)
 
 
-class _Unset:
-    """Distinguishes "no per-call timeout" from an explicit ``timeout=None``."""
+class Unset:
+    """The absence of an argument, where ``None`` is itself a meaningful value.
+
+    A per-call ``timeout=None`` means "no timeout"; omitting it means "use the
+    client's". The two need different values to be told apart.
+    """
 
     __slots__ = ()
 
 
-_UNSET = _Unset()
+UNSET = Unset()
 
 #: A per-call timeout override. Omitted, the client's own timeout applies.
-TimeoutOption = float | httpx.Timeout | _Unset | None
+TimeoutOption = float | httpx.Timeout | Unset | None
 
 
 class CallOptions(TypedDict):
@@ -189,6 +195,29 @@ def _quote(text: str) -> str:
     return quote(text, safe="")
 
 
+def encode_body(body: Any) -> bytes:
+    """Serialise a request body to JSON.
+
+    Generated request models are dumped by alias and without the fields the
+    caller never set, so a body carries exactly what was asked for: the API
+    treats an absent field and a null one differently, and a model's defaults
+    are the SDK's opinion rather than the caller's.
+    """
+    return json.dumps(_jsonable(body)).encode()
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    if isinstance(value, Mapping):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if is_dataclass(value) and not isinstance(value, type):
+        return {f.name: _jsonable(getattr(value, f.name)) for f in fields(value)}
+    return value
+
+
 def _query_scalar(value: object) -> str:
     # JSON and every other API client spell booleans lower-case; `str(True)`
     # would send `True`, which the API rejects.
@@ -292,7 +321,7 @@ class ApiClient:
         # parameters instead, but a few operations model an input only as a
         # body, and the API reads it from there.
         if body is not None:
-            content = json.dumps(body).encode()
+            content = encode_body(body)
             merged["content-type"] = "application/json"
 
         # The query string is built here rather than by httpx, which would escape
@@ -303,7 +332,7 @@ class ApiClient:
             base + path + (f"?{query_string}" if query_string else ""),
             content=content,
             headers=merged,
-            timeout=self._config.timeout if isinstance(timeout, _Unset) else timeout,
+            timeout=self._config.timeout if isinstance(timeout, Unset) else timeout,
         )
 
     async def _send(self, request: httpx.Request, *, stream: bool) -> httpx.Response:
@@ -333,7 +362,7 @@ class ApiClient:
         body: Any = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
-        timeout: TimeoutOption = _UNSET,
+        timeout: TimeoutOption = UNSET,
     ) -> T:
         """Perform a request and return its response envelope parsed as `model`."""
         request = self._build_request(
@@ -368,7 +397,7 @@ class ApiClient:
         body: Any = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
-        timeout: TimeoutOption = _UNSET,
+        timeout: TimeoutOption = UNSET,
     ) -> None:
         """Perform a request whose response carries no payload worth parsing."""
         request = self._build_request(
@@ -394,7 +423,7 @@ class ApiClient:
         body: Any = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
-        timeout: TimeoutOption = _UNSET,
+        timeout: TimeoutOption = UNSET,
     ) -> AsyncIterator[T]:
         """Yield each event of a ``text/event-stream`` response, parsed as `model`.
 
