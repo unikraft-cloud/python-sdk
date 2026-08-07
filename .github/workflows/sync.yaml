@@ -25,13 +25,23 @@ jobs:
       with:
         ref: ${{ inputs.channel }}
 
+    - name: Install Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: stable
+
     - name: Install uv
-      uses: astral-sh/setup-uv@v7
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
 
     - name: Generate
       shell: bash
       env:
         CHANNEL: ${{ inputs.channel }}
+        # Use the published generator once the Python template helpers land on
+        # the openapi-gen prod-staging branch.
+        OPENAPI_GEN: go run unikraft.com/x/tools/openapi-gen@${{ inputs.channel }}
       run: |
         make generate
 
@@ -56,5 +66,5 @@ jobs:
         branch: ${{ steps.id.outputs.name }}
         committer: Unikraft Bot <monkey@unikraft.io>
         author: Unikraft Bot <monkey@unikraft.io>
-        add-paths: controlplane,platform
+        add-paths: src/unikraft_cloud/api/platform,src/unikraft_cloud/api/controlplane
         signoff: true
