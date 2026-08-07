@@ -111,11 +111,11 @@ def with_metro(value: BaseModel, metro: Metro, cls: type[TaggedT]) -> TaggedT:
     on large listings.
     """
     fields: dict[str, Any] = {name: getattr(value, name) for name in type(value).model_fields}
-    tagged = cls.model_construct(
-        _fields_set=value.model_fields_set | {"metro"},
-        metro=metro,
-        **fields,
-    )
+    # The specification declares `metro` on most resources, but only fills it in
+    # when the request went through the global control plane. The metro that
+    # actually served the response is always known here, so it wins.
+    fields["metro"] = metro
+    tagged = cls.model_construct(_fields_set=value.model_fields_set | {"metro"}, **fields)
     # Fields the server sent that the specification does not describe are kept
     # rather than dropped, so a tagged result is never lossier than the raw one.
     extra = value.model_extra
