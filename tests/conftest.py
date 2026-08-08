@@ -17,6 +17,7 @@ __all__ = [
     "changed_instance",
     "envelope",
     "instance",
+    "instance_logs",
     "metro",
     "queued",
     "quotas",
@@ -130,6 +131,19 @@ def changed_instance(uuid: str = "u1", name: str = "web", **overrides: Any) -> d
         "state": "stopped",
         "previous_state": "running",
         **overrides,
+    }
+
+
+def instance_logs(uuid: str = "u1", name: str = "web", output: str = "aGk=") -> dict[str, Any]:
+    """A console log as the API reports it, output base64-encoded."""
+    span = {"start": 0, "end": 1}
+    return {
+        "uuid": uuid,
+        "name": name,
+        "output": output,
+        "available": span,
+        "range": span,
+        "state": "running",
     }
 
 
