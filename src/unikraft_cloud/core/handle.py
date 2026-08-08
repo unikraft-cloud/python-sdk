@@ -105,6 +105,14 @@ class ResourceHandle(Generic[T]):
                     stacklevel=2,
                 )
 
+    def _disarm(self) -> None:
+        """Mark this handle as accounted for, so dropping it warns about nothing.
+
+        For a handle that represents no unsent work -- one already located, or one
+        that was only counted -- being dropped is not a mistake.
+        """
+        self._consumed = True
+
     async def resolve(self) -> MetroTarget:
         """The resource's reference and the metro serving it, resolving the scope."""
         self._consumed = True

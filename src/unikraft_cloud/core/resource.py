@@ -282,7 +282,7 @@ class Resource(Generic[A]):
             raise error
         return results
 
-    def _call(self, endpoint: MetroEndpoint, opts: ScopeOptions) -> CallOptions:
+    def _call(self, endpoint: MetroEndpoint, opts: CallOptions) -> CallOptions:
         """Build the per-call options every plumbing operation accepts."""
         call: CallOptions = {"base_url": endpoint.base_url}
         if "headers" in opts:

@@ -56,7 +56,12 @@ class HandleSet(Generic[H, T]):
 
     async def size(self) -> int:
         """How many metros hold a match."""
-        return len(await self.handles())
+        handles = await self.handles()
+        # Counting them is not leaving work undone, so they must not report
+        # themselves as dropped un-awaited.
+        for handle in handles:
+            handle._disarm()
+        return len(handles)
 
     def __await__(self) -> Generator[Any, None, list[T]]:
         # Awaitable on purpose, like ResourceHandle: `await each(...)` reads every
