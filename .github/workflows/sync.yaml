@@ -66,5 +66,5 @@ jobs:
         branch: ${{ steps.id.outputs.name }}
         committer: Unikraft Bot <monkey@unikraft.io>
         author: Unikraft Bot <monkey@unikraft.io>
-        add-paths: src/unikraft_cloud/api/platform,src/unikraft_cloud/api/controlplane
+        add-paths: src/unikraft_cloud/api/platform/*_gen.py,src/unikraft_cloud/api/controlplane/*_gen.py
         signoff: true
