@@ -22,7 +22,11 @@ from .core.metro import (
     metro_base_url,
 )
 from .core.session import Session, SessionConfig
+from .resources.certificates import Certificates
 from .resources.instances import Instances
+from .resources.service_groups import ServiceGroups
+from .resources.users import Users
+from .resources.volumes import Volumes
 
 __all__ = ["MetroClient", "Scope", "UnikraftCloud"]
 
@@ -42,6 +46,14 @@ class Scope:
         self.scope = scope
         #: Instances (microVMs).
         self.instances = Instances(session, scope)
+        #: Persistent volumes.
+        self.volumes = Volumes(session, scope)
+        #: Service groups (load-balanced networking).
+        self.services = ServiceGroups(session, scope)
+        #: TLS certificates.
+        self.certificates = Certificates(session, scope)
+        #: Users and quotas.
+        self.users = Users(session, scope)
         self._session = session
 
 
