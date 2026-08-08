@@ -45,10 +45,11 @@ line-length = 100
 select = ["B", "E", "F", "I", "N", "RUF", "SIM", "UP", "W"]
 
 # The generated plumbing mirrors the OpenAPI specification rather than the house
-# style: operation signatures are as wide as the spec makes them, and the module
-# layout is the generator's.
+# style: operation signatures are as wide as the spec makes them, the module
+# layout is the generator's, and the docstrings are the specification's prose
+# verbatim -- including the odd non-ASCII character, which is not ours to edit.
 [tool.ruff.lint.per-file-ignores]
-"src/unikraft_cloud/api/**" = ["E501", "F401", "N803", "N815", "RUF012"]
+"src/unikraft_cloud/api/**" = ["E501", "F401", "N803", "N815", "RUF001", "RUF012"]
 
 [tool.mypy]
 files = ["src"]
