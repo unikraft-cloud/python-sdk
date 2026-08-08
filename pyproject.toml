@@ -55,7 +55,7 @@ select = ["B", "E", "F", "I", "N", "RUF", "SIM", "UP", "W"]
 # The plugin understands populate_by_name, so a generated model can be built
 # with either the Python field name or the wire name.
 plugins = ["pydantic.mypy"]
-files = ["src", "tests"]
+files = ["src", "tests", "examples"]
 python_version = "3.10"
 strict = true
 
