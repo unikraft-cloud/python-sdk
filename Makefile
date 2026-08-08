@@ -7,6 +7,12 @@ SPEC_BASE         ?= https://raw.githubusercontent.com/unikraft-cloud/openapi/re
 PLATFORM_SPEC     ?= $(SPEC_BASE)/platform.json
 CONTROLPLANE_SPEC ?= $(SPEC_BASE)/controlplane.json
 
+# Both specs also live in the proto repository, which is where the changes land
+# first. Generate against a local checkout of it with:
+#   make generate \
+#     PLATFORM_SPEC=../proto/gen/openapi/platform/openapi.yaml \
+#     CONTROLPLANE_SPEC=../proto/gen/openapi/controlplane/openapi.yaml
+
 # The openapi-gen code generator. While the Python template functions are
 # unreleased, build it from a local checkout and point OPENAPI_GEN at the
 # binary (this repository is not a Go module, so `go run <path>` won't work,
