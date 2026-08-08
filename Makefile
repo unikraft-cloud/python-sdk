@@ -7,6 +7,12 @@ SPEC_BASE         ?= https://raw.githubusercontent.com/unikraft-cloud/openapi/re
 PLATFORM_SPEC     ?= $(SPEC_BASE)/platform.json
 CONTROLPLANE_SPEC ?= $(SPEC_BASE)/controlplane.json
 
+# Both specs also live in the proto repository, which is where the changes land
+# first. Generate against a local checkout of it with:
+#   make generate \
+#     PLATFORM_SPEC=../proto/gen/openapi/platform/openapi.yaml \
+#     CONTROLPLANE_SPEC=../proto/gen/openapi/controlplane/openapi.yaml
+
 # The openapi-gen code generator, pinned so a regeneration is reproducible.
 # Raise OPENAPI_GEN_VERSION to take a newer one.
 GO                   ?= go
