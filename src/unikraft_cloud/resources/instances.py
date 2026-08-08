@@ -7,7 +7,7 @@ from __future__ import annotations
 # there spell the builtin out.
 import builtins
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from typing import Any, TypeVar, cast, get_args
+from typing import Any, TypeVar, get_args
 
 import httpx
 from pydantic import BaseModel
@@ -18,7 +18,7 @@ from ..core.errors import WaitTimeoutError
 from ..core.fanout import fanout
 from ..core.handle import HandleSteps, Located, MetroTarget, ResourceHandle
 from ..core.handle_set import HandleSet
-from ..core.http import UNSET, CallOptions, TimeoutOption, Unset, comma_separated
+from ..core.http import UNSET, CallOptions, TimeoutOption, comma_separated
 from ..core.metro import MetroEndpoint, MetroScope
 from ..core.pagination import Listing, paginate
 from ..core.patch import PatchItem, ResourceEditor, check_props, to_patch_items
@@ -33,6 +33,16 @@ from ..core.resource import (
 )
 from ..core.response import Ref, RefLike, describe_ref, matched_entries, or_absent
 from ..core.session import Session
+from ._shared import (
+    at_metro,
+    filter_of,
+    filters_for,
+    options,
+    ref_dict,
+    resolved,
+    scoped,
+    tag_first,
+)
 
 __all__ = [
     "DeletedInstance",
@@ -55,7 +65,6 @@ __all__ = [
 #: resolves to a list of them.
 T = TypeVar("T")
 #: A tagged model an operation reports.
-M = TypeVar("M", bound=BaseModel)
 #: What a chained operation resolves to, model or list of them.
 V = TypeVar("V")
 
@@ -128,73 +137,6 @@ class InstanceHistory(models.GetCheckpointHistoryResponseInstanceHistory):
 
 #: A staged multi-operation edit of one instance.
 InstanceEditor = ResourceEditor["InstanceHandle[UpdatedInstance]"]
-
-
-def _options(
-    headers: Mapping[str, str] | None,
-    base_url: str | None,
-    timeout: TimeoutOption,
-) -> CallOptions:
-    """Collect the per-call options an operation was given."""
-    opts: CallOptions = {}
-    if headers is not None:
-        opts["headers"] = headers
-    if base_url is not None:
-        opts["base_url"] = base_url
-    if not isinstance(timeout, Unset):
-        opts["timeout"] = timeout
-    return opts
-
-
-def _scoped(opts: CallOptions, metros: MetroScope | None) -> ScopeOptions:
-    # Every call option is also a scope option; the cast is what says so, since
-    # TypedDicts do not widen on their own.
-    scoped = cast("ScopeOptions", dict(opts))
-    if metros is not None:
-        scoped["metros"] = metros
-    return scoped
-
-
-def _at(target: MetroTarget, opts: CallOptions) -> CallOptions:
-    """Point per-call options at the metro a handle resolved to.
-
-    A caller's own ``base_url`` still wins: it names where this one call goes.
-    """
-    return {"base_url": target.base_url, **opts}
-
-
-def _ref_dict(ref: Ref) -> dict[str, str]:
-    """A reference as a request-body item, without the metro it named.
-
-    The metro says *where* to send the request, so it must not travel in the
-    body -- the API rejects the unknown field.
-    """
-    return {"uuid": ref.uuid} if ref.uuid is not None else {"name": ref.name or ""}
-
-
-def _filter(ref: Ref) -> tuple[builtins.list[str] | None, builtins.list[str] | None]:
-    """The ``uuid`` and ``name`` query filters for a reference.
-
-    Exactly one is set: the API validates whichever field it is given, so a name
-    sent in the ``uuid`` filter fails outright.
-    """
-    if ref.uuid is not None:
-        return [ref.uuid], None
-    return None, [ref.name or ""]
-
-
-def _tag(envelope: BaseModel, target: MetroTarget, cls: type[M]) -> M:
-    """Unwrap a single-instance response and tag it with the metro it came from."""
-    return first_tagged(envelope, _KEY, target.metro, cls, f"instance {describe_ref(target.ref)}")
-
-
-def _already(hit: Located[Instance]) -> Callable[[], Awaitable[Located[Instance]]]:
-    """A locate step for a match that has already been found."""
-
-    async def located() -> Located[Instance]:
-        return hit
-
-    return located
 
 
 def _timed_out(res: BaseModel, wanted: str | None) -> None:
@@ -282,9 +224,9 @@ class InstanceHandle(ResourceHandle[T]):
         opts = self._options(headers, base_url, timeout)
 
         async def run(target: MetroTarget) -> StartedInstance:
-            body = [models.StartInstancesRequestItem.model_validate(_ref_dict(target.ref))]
-            res = await self._instances.api.start_instances(body=body, **_at(target, opts))
-            return _tag(res, target, StartedInstance)
+            body = [models.StartInstancesRequestItem.model_validate(ref_dict(target.ref))]
+            res = await self._instances.api.start_instances(body=body, **at_metro(target, opts))
+            return tag_first(res, _KEY, target, StartedInstance, "instance")
 
         return self._then(run, opts)
 
@@ -299,9 +241,9 @@ class InstanceHandle(ResourceHandle[T]):
         opts = self._options(headers, base_url, timeout)
 
         async def run(target: MetroTarget) -> StoppedInstance:
-            body = [models.StopInstancesRequestItem.model_validate(_ref_dict(target.ref))]
-            res = await self._instances.api.stop_instances(body=body, **_at(target, opts))
-            return _tag(res, target, StoppedInstance)
+            body = [models.StopInstancesRequestItem.model_validate(ref_dict(target.ref))]
+            res = await self._instances.api.stop_instances(body=body, **at_metro(target, opts))
+            return tag_first(res, _KEY, target, StoppedInstance, "instance")
 
         return self._then(run, opts)
 
@@ -316,9 +258,9 @@ class InstanceHandle(ResourceHandle[T]):
         opts = self._options(headers, base_url, timeout)
 
         async def run(target: MetroTarget) -> SuspendedInstance:
-            body = [models.SuspendInstancesRequestItem.model_validate(_ref_dict(target.ref))]
-            res = await self._instances.api.suspend_instances(body=body, **_at(target, opts))
-            return _tag(res, target, SuspendedInstance)
+            body = [models.SuspendInstancesRequestItem.model_validate(ref_dict(target.ref))]
+            res = await self._instances.api.suspend_instances(body=body, **at_metro(target, opts))
+            return tag_first(res, _KEY, target, SuspendedInstance, "instance")
 
         return self._then(run, opts)
 
@@ -333,9 +275,9 @@ class InstanceHandle(ResourceHandle[T]):
         opts = self._options(headers, base_url, timeout)
 
         async def run(target: MetroTarget) -> DeletedInstance:
-            body = [models.DeleteInstanceRequestItem.model_validate(_ref_dict(target.ref))]
-            res = await self._instances.api.delete_instances(body=body, **_at(target, opts))
-            return _tag(res, target, DeletedInstance)
+            body = [models.DeleteInstanceRequestItem.model_validate(ref_dict(target.ref))]
+            res = await self._instances.api.delete_instances(body=body, **at_metro(target, opts))
+            return tag_first(res, _KEY, target, DeletedInstance, "instance")
 
         return self._then(run, opts)
 
@@ -382,13 +324,13 @@ class InstanceHandle(ResourceHandle[T]):
         async def run(target: MetroTarget) -> UpdatedInstance:
             body = [
                 models.UpdateInstancesRequestItem.model_validate(
-                    {**_ref_dict(target.ref), "prop": item.prop, "op": item.op}
+                    {**ref_dict(target.ref), "prop": item.prop, "op": item.op}
                     | ({} if item.value is None else {"value": item.value})
                 )
                 for item in changes
             ]
-            res = await self._instances.api.update_instances(body=body, **_at(target, opts))
-            return _tag(res, target, UpdatedInstance)
+            res = await self._instances.api.update_instances(body=body, **at_metro(target, opts))
+            return tag_first(res, _KEY, target, UpdatedInstance, "instance")
 
         return self._then(run, opts)
 
@@ -443,14 +385,14 @@ class InstanceHandle(ResourceHandle[T]):
             # identifier from the query here.
             body = [
                 models.WaitInstancesRequestItem.model_validate(
-                    _ref_dict(target.ref)
+                    ref_dict(target.ref)
                     | ({} if state is None else {"state": state})
                     | ({} if timeout_seconds is None else {"timeout_s": timeout_seconds})
                 )
             ]
-            res = await self._instances.api.wait_instances(body=body, **_at(target, opts))
+            res = await self._instances.api.wait_instances(body=body, **at_metro(target, opts))
             _timed_out(res, state)
-            return _tag(res, target, WaitedInstance)
+            return tag_first(res, _KEY, target, WaitedInstance, "instance")
 
         return self._then(run, opts)
 
@@ -479,13 +421,13 @@ class InstanceHandle(ResourceHandle[T]):
             # As for `wait`, the range travels in the body rather than the query.
             body = [
                 models.GetInstancesLogsRequestItem.model_validate(
-                    _ref_dict(target.ref)
+                    ref_dict(target.ref)
                     | ({} if offset is None else {"offset": offset})
                     | ({} if limit is None else {"limit": limit})
                 )
             ]
-            res = await self._instances.api.get_instance_logs(body=body, **_at(target, opts))
-            return _tag(res, target, InstanceLogs)
+            res = await self._instances.api.get_instance_logs(body=body, **at_metro(target, opts))
+            return tag_first(res, _KEY, target, InstanceLogs, "instance")
 
         return self._then(run, opts)
 
@@ -500,11 +442,11 @@ class InstanceHandle(ResourceHandle[T]):
         opts = self._options(headers, base_url, timeout)
 
         async def run(target: MetroTarget) -> InstanceMetrics:
-            uuid, name = _filter(target.ref)
+            uuid, name = filter_of(target.ref)
             res = await self._instances.api.get_instance_metrics(
-                uuid=uuid, name=name, **_at(target, opts)
+                uuid=uuid, name=name, **at_metro(target, opts)
             )
-            return _tag(res, target, InstanceMetrics)
+            return tag_first(res, _KEY, target, InstanceMetrics, "instance")
 
         return self._then(run, opts)
 
@@ -519,9 +461,9 @@ class InstanceHandle(ResourceHandle[T]):
         opts = self._options(headers, base_url, timeout)
 
         async def run(target: MetroTarget) -> list[InstanceHistory]:
-            uuid, name = _filter(target.ref)
+            uuid, name = filter_of(target.ref)
             res = await self._instances.api.get_instance_history(
-                uuid=uuid, name=name, **_at(target, opts)
+                uuid=uuid, name=name, **at_metro(target, opts)
             )
             return list_tagged(res, _KEY, target.metro, InstanceHistory)
 
@@ -632,8 +574,8 @@ class Instances(Resource[InstancesApi]):
                 image="nginx:latest", memory_mb=256
             )
         """
-        call = _options(headers, base_url, timeout)
-        opts = _scoped(call, metros)
+        call = options(headers, base_url, timeout)
+        opts = scoped(call, metros)
         check_spec(spec, models.CreateInstanceRequest, self.noun)
         if spec.get("replicas"):
             raise TypeError(
@@ -686,8 +628,8 @@ class Instances(Resource[InstancesApi]):
             await ukc.instances.get(name="web", metro="fra").suspend()
         """
         ref = Ref(uuid=uuid, name=name, metro=metro)
-        call = _options(headers, base_url, timeout)
-        opts = _scoped(call, metros)
+        call = options(headers, base_url, timeout)
+        opts = scoped(call, metros)
         return InstanceHandle(
             self,
             HandleSteps(
@@ -722,8 +664,8 @@ class Instances(Resource[InstancesApi]):
             [inst.metro for inst in await ukc.instances.each(name="web")]
         """
         ref = Ref(uuid=uuid, name=name, metro=metro)
-        call = _options(headers, base_url, timeout)
-        opts = _scoped(call, metros)
+        call = options(headers, base_url, timeout)
+        opts = scoped(call, metros)
 
         async def locate() -> builtins.list[InstanceHandle[Instance]]:
             located = await self._locate_all(
@@ -733,7 +675,7 @@ class Instances(Resource[InstancesApi]):
                 InstanceHandle(
                     self,
                     HandleSteps(
-                        locate=_already(hit),
+                        locate=resolved(hit),
                         fetch=lambda target: self.read(target, opts),
                         what=f"instance {describe_ref(ref)}",
                         located=True,
@@ -771,7 +713,7 @@ class Instances(Resource[InstancesApi]):
                 print(inst.metro, inst.name, inst.state)
             every = await ukc.instances.list(details=True)
         """
-        opts = _scoped(_options(headers, base_url, timeout), metros)
+        opts = scoped(options(headers, base_url, timeout), metros)
 
         async def merged() -> AsyncIterator[Instance]:
             endpoints = await self._endpoints(opts)
@@ -811,12 +753,11 @@ class Instances(Resource[InstancesApi]):
         References are located first when the scope spans metros, so each
         instance is deleted only in the metro that holds it.
         """
-        opts = _scoped(_options(headers, base_url, timeout), metros)
+        opts = scoped(options(headers, base_url, timeout), metros)
 
         def call(group: MetroGroup) -> Awaitable[BaseModel]:
             body = [
-                models.DeleteInstanceRequestItem.model_validate(_ref_dict(ref))
-                for ref in group.refs
+                models.DeleteInstanceRequestItem.model_validate(ref_dict(ref)) for ref in group.refs
             ]
             return self.api.delete_instances(body=body, **self._call(group.endpoint, opts))
 
@@ -832,12 +773,11 @@ class Instances(Resource[InstancesApi]):
         timeout: TimeoutOption = UNSET,
     ) -> builtins.list[StartedInstance]:
         """Start one or more instances."""
-        opts = _scoped(_options(headers, base_url, timeout), metros)
+        opts = scoped(options(headers, base_url, timeout), metros)
 
         def call(group: MetroGroup) -> Awaitable[BaseModel]:
             body = [
-                models.StartInstancesRequestItem.model_validate(_ref_dict(ref))
-                for ref in group.refs
+                models.StartInstancesRequestItem.model_validate(ref_dict(ref)) for ref in group.refs
             ]
             return self.api.start_instances(body=body, **self._call(group.endpoint, opts))
 
@@ -853,11 +793,11 @@ class Instances(Resource[InstancesApi]):
         timeout: TimeoutOption = UNSET,
     ) -> builtins.list[StoppedInstance]:
         """Stop one or more instances."""
-        opts = _scoped(_options(headers, base_url, timeout), metros)
+        opts = scoped(options(headers, base_url, timeout), metros)
 
         def call(group: MetroGroup) -> Awaitable[BaseModel]:
             body = [
-                models.StopInstancesRequestItem.model_validate(_ref_dict(ref)) for ref in group.refs
+                models.StopInstancesRequestItem.model_validate(ref_dict(ref)) for ref in group.refs
             ]
             return self.api.stop_instances(body=body, **self._call(group.endpoint, opts))
 
@@ -873,11 +813,11 @@ class Instances(Resource[InstancesApi]):
         timeout: TimeoutOption = UNSET,
     ) -> builtins.list[SuspendedInstance]:
         """Suspend one or more instances."""
-        opts = _scoped(_options(headers, base_url, timeout), metros)
+        opts = scoped(options(headers, base_url, timeout), metros)
 
         def call(group: MetroGroup) -> Awaitable[BaseModel]:
             body = [
-                models.SuspendInstancesRequestItem.model_validate(_ref_dict(ref))
+                models.SuspendInstancesRequestItem.model_validate(ref_dict(ref))
                 for ref in group.refs
             ]
             return self.api.suspend_instances(body=body, **self._call(group.endpoint, opts))
@@ -889,17 +829,17 @@ class Instances(Resource[InstancesApi]):
 
         Used by :class:`InstanceHandle`.
         """
-        uuid, name = _filter(target.ref)
+        uuid, name = filter_of(target.ref)
         res = await self.api.get_instances(
             uuid=uuid, name=name, details=True, **self._call(target, opts)
         )
-        return _tag(res, target, Instance)
+        return tag_first(res, _KEY, target, Instance, "instance")
 
     async def _find(self, endpoint: MetroEndpoint, ref: Ref, opts: ScopeOptions) -> Instance | None:
         """Look for one instance in one metro; absent is not a failure."""
 
         async def lookup() -> Instance | None:
-            uuid, name = _filter(ref)
+            uuid, name = filter_of(ref)
             res = await self.api.get_instances(
                 uuid=uuid, name=name, details=True, **self._call(endpoint, opts)
             )
@@ -914,8 +854,7 @@ class Instances(Resource[InstancesApi]):
         """Which of these references one metro holds, in a single filtered listing."""
 
         async def lookup() -> builtins.list[Ref]:
-            uuid = [ref.uuid for ref in refs if ref.uuid is not None] or None
-            name = [ref.name for ref in refs if ref.name is not None] or None
+            uuid, name = filters_for(refs)
             res = await self.api.get_instances(uuid=uuid, name=name, **self._call(endpoint, opts))
             return refs_matching(refs, matched_entries(res, _KEY))
 
