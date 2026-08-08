@@ -48,7 +48,7 @@ select = ["B", "E", "F", "I", "N", "RUF", "SIM", "UP", "W"]
 # style: operation signatures are as wide as the spec makes them, and the module
 # layout is the generator's.
 [tool.ruff.lint.per-file-ignores]
-"src/unikraft_cloud/api/**" = ["E501", "N803", "N815", "RUF012"]
+"src/unikraft_cloud/api/**" = ["E501", "F401", "N803", "N815", "RUF012"]
 
 [tool.mypy]
 files = ["src"]
