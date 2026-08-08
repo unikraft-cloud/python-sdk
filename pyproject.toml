@@ -52,7 +52,10 @@ select = ["B", "E", "F", "I", "N", "RUF", "SIM", "UP", "W"]
 "src/unikraft_cloud/api/**" = ["E501", "F401", "N803", "N815", "RUF001", "RUF012"]
 
 [tool.mypy]
-files = ["src"]
+# The plugin understands populate_by_name, so a generated model can be built
+# with either the Python field name or the wire name.
+plugins = ["pydantic.mypy"]
+files = ["src", "tests"]
 python_version = "3.10"
 strict = true
 
