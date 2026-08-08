@@ -29,6 +29,7 @@ __all__ = [
     "UNSET",
     "ApiClient",
     "ApiClientConfig",
+    "ApiClientGroup",
     "CallOptions",
     "CommaSeparated",
     "QueryValue",
@@ -250,20 +251,14 @@ def _lower_keys(headers: Mapping[str, str]) -> dict[str, str]:
     return {key.lower(): value for key, value in headers.items()}
 
 
-class ApiClient:
-    """Base transport for the generated resource clients.
+class _PoolOwner:
+    """Sends through an httpx client, closing it only if it made it.
 
-    Performs authenticated requests and returns the parsed response envelope.
-    Raises :class:`UnikraftCloudError` on network failures and non-2xx HTTP
-    responses.
+    An injected client is shared rather than owned: whoever supplied it closes
+    it, so one pool can serve several of these and be released exactly once.
     """
 
     def __init__(self, config: ApiClientConfig) -> None:
-        self._config = config
-        self._base_url = normalise_base_url(config.base_url)
-        self._default_headers = _lower_keys(config.headers or {})
-        if config.user_agent:
-            self._default_headers["user-agent"] = config.user_agent
         self._owns_http = config.http is None
         self._http = config.http or httpx.AsyncClient(
             transport=config.transport,
@@ -273,11 +268,11 @@ class ApiClient:
 
     @property
     def http(self) -> httpx.AsyncClient:
-        """The httpx client this transport sends through."""
+        """The httpx client this sends through."""
         return self._http
 
     async def aclose(self) -> None:
-        """Release the connection pool, if this client is the one that made it."""
+        """Release the connection pool, if this is what made it."""
         if self._owns_http:
             await self._http.aclose()
 
@@ -291,6 +286,41 @@ class ApiClient:
         tb: TracebackType | None,
     ) -> None:
         await self.aclose()
+
+
+class ApiClientGroup(_PoolOwner):
+    """Several plumbing clients behind one configuration.
+
+    Members are built from :attr:`config`, which always carries an httpx client:
+    the injected one, or one the group made. Either way the members share a
+    single pool, and the group is the one thing to close.
+    """
+
+    def __init__(self, config: ApiClientConfig) -> None:
+        super().__init__(config)
+        self._config = replace(config, http=self._http)
+
+    @property
+    def config(self) -> ApiClientConfig:
+        """The configuration every member was built from, pool included."""
+        return self._config
+
+
+class ApiClient(_PoolOwner):
+    """Base transport for the generated resource clients.
+
+    Performs authenticated requests and returns the parsed response envelope.
+    Raises :class:`UnikraftCloudError` on network failures and non-2xx HTTP
+    responses.
+    """
+
+    def __init__(self, config: ApiClientConfig) -> None:
+        super().__init__(config)
+        self._config = config
+        self._base_url = normalise_base_url(config.base_url)
+        self._default_headers = _lower_keys(config.headers or {})
+        if config.user_agent:
+            self._default_headers["user-agent"] = config.user_agent
 
     def _build_request(
         self,
