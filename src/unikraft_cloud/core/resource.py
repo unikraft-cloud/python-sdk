@@ -427,7 +427,7 @@ class Resource(Generic[A]):
 
         return await self._run_groups(groups, run)
 
-    def _call(self, endpoint: MetroEndpoint, opts: ScopeOptions) -> CallOptions:
+    def _call(self, endpoint: MetroEndpoint, opts: CallOptions) -> CallOptions:
         """Build the per-call options every plumbing operation accepts.
 
         A caller's own ``base_url`` wins: it names where this one call goes.

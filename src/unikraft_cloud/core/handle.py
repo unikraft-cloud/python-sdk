@@ -64,6 +64,10 @@ class HandleSteps(Generic[T]):
     fetch: Callable[[MetroTarget], Awaitable[T]]
     #: What this handle refers to, for the never-awaited warning.
     what: str = "resource"
+    #: Whether the resource was already found, which is how a set hands out its
+    #: matches. Such a handle holds no unsent work, so dropping it is not a
+    #: forgotten `await` and warns about nothing.
+    located: bool = False
     #: The call options the handle was made with. Operations chained onto it
     #: start from these, so a header given to `get()` reaches `suspend()` too.
     options: CallOptions = field(default_factory=lambda: CallOptions())
@@ -85,7 +89,7 @@ class ResourceHandle(Generic[T]):
         self._steps = steps
         self._located: asyncio.Future[Located[T]] | None = None
         self._value: asyncio.Future[T] | None = None
-        self._consumed = False
+        self._consumed = steps.located
 
     def __await__(self) -> Generator[Any, None, T]:
         # Being awaitable is the point: it lets `await ukc.instances.get(ref)`
