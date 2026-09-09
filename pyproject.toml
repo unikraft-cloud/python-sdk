@@ -1,26 +1,64 @@
 [project]
-name = "unikraft-cloud-platform"
-version = "v1.0.0"
-description = "A client library for accessing Unikraft Cloud Platform API"
-authors = []
-requires-python = ">=3.9,<4.0"
+name = "unikraft-cloud"
+version = "0.1.0"
+description = "Official Python SDK for the Unikraft Cloud Platform API"
 readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE.md"]
+authors = [{ name = "Unikraft GmbH" }]
+requires-python = ">=3.10"
+keywords = ["unikraft", "unikraft-cloud", "kraftcloud", "sdk", "unikernel", "cloud", "api"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
 dependencies = [
-    "httpx>=0.23.0,<0.29.0",
-    "attrs>=22.2.0",
-    "python-dateutil>=2.8.0,<3",
+  "httpx>=0.27",
+  "pydantic>=2.7",
 ]
 
-[tool.uv.build-backend]
-module-name = "unikraft_cloud_platform"
-module-root = ""
+[project.urls]
+Homepage = "https://unikraft.com"
+Repository = "https://github.com/unikraft-cloud/python-sdk"
+Issues = "https://github.com/unikraft-cloud/python-sdk/issues"
 
 [build-system]
 requires = ["uv_build>=0.8.0,<0.9.0"]
 build-backend = "uv_build"
 
+[dependency-groups]
+dev = [
+  "mypy>=1.11",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+]
+
+# Matches the JavaScript SDK's Biome configuration, so the two SDKs read alike.
 [tool.ruff]
-line-length = 120
+line-length = 100
 
 [tool.ruff.lint]
-select = ["F", "I", "UP"]
+select = ["B", "E", "F", "I", "N", "RUF", "SIM", "UP", "W"]
+
+# The generated plumbing mirrors the OpenAPI specification rather than the house
+# style: operation signatures are as wide as the spec makes them, the module
+# layout is the generator's, and the docstrings are the specification's prose
+# verbatim -- including the odd non-ASCII character, which is not ours to edit.
+[tool.ruff.lint.per-file-ignores]
+"src/unikraft_cloud/api/**" = ["E501", "F401", "N803", "N815", "RUF001", "RUF012"]
+
+[tool.mypy]
+# The plugin understands populate_by_name, so a generated model can be built
+# with either the Python field name or the wire name.
+plugins = ["pydantic.mypy"]
+files = ["src", "tests", "examples"]
+python_version = "3.10"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
