@@ -33,6 +33,8 @@ from ..core.resource import (
 )
 from ..core.response import Ref, RefLike, describe_ref, matched_entries, or_absent
 from ..core.session import Session
+from ..plugins import Plugin, ResolvedInstance
+from ..plugins.sandbox import PLUGIN_NAME, Sandbox
 from ._shared import (
     at_metro,
     filter_of,
@@ -475,6 +477,59 @@ class InstanceHandle(ResourceHandle[T]):
         """Chain another operation onto this handle."""
         return InstanceHandle(self._instances, self._chained(fetch, opts))
 
+    def plugin(self, name: str) -> Plugin:
+        """A plugin attached to the instance, addressed lazily.
+
+        Nothing is sent until the plugin's route is needed. Resolving it runs
+        this handle's own operation first, if it is one, and reads the instance
+        only when its UUID is not yet known: a UUID reference, a located or
+        created instance, and a waited-for instance all already know it.
+
+        .. code-block:: python
+
+            route = await ukc.instances.get(name="web").plugin("sandbox").route()
+        """
+
+        async def resolve() -> ResolvedInstance:
+            target = await self._next()
+            held: object = (await self._locate()).value
+            value = self._value
+            if (
+                held is None
+                and value is not None
+                and value.done()
+                and not value.cancelled()
+                and value.exception() is None
+            ):
+                held = value.result()
+            uuid = target.ref.uuid
+            if uuid is None:
+                known = getattr(held, "uuid", None)
+                if isinstance(known, str) and known:
+                    uuid = known
+            return ResolvedInstance(
+                target=target,
+                uuid=uuid,
+                instance=held if isinstance(held, Instance) else None,
+            )
+
+        # Addressing a plugin consumes the handle the way chaining does: it is
+        # the plugin that will send something, not this handle.
+        self._consumed = True
+        return self._instances._plugin(name, resolve)
+
+    def sandbox(self, *, plugin: str = PLUGIN_NAME) -> Sandbox:
+        """The sandbox plugin on the instance: commands and files inside it.
+
+        ``plugin`` names the plugin when it was attached under another name.
+
+        .. code-block:: python
+
+            sb = ukc.metro("fra").instances.get(uuid=uuid).sandbox()
+            result = await sb.exec("uname -a")
+        """
+        return Sandbox(self.plugin(plugin))
+
 
 class InstanceSet(HandleSet["InstanceHandle[Instance]", Instance]):
     """Every instance matching one reference, one per metro that holds it.
@@ -550,6 +605,15 @@ class Instances(Resource[InstancesApi]):
 
     def __init__(self, session: Session, scope: MetroScope) -> None:
         super().__init__(session, scope, InstancesApi(session.platform))
+
+    def _plugin(self, name: str, resolve: Callable[[], Awaitable[ResolvedInstance]]) -> Plugin:
+        """A plugin on the instance a handle resolves to. Used by :class:`InstanceHandle`."""
+        return Plugin(
+            name,
+            resolve=resolve,
+            read=lambda target: self.read(target, {}),
+            config=self._session.platform,
+        )
 
     def create(
         self,

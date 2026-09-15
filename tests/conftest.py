@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+import inspect
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from typing import Any
 
 import httpx
@@ -39,17 +40,28 @@ def _no_ambient_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("UKC_METRO", raising=False)
 
 
-class Recorder:
-    """A transport that records every request it was asked to send."""
+#: A handler answering one request, at once or after awaiting something.
+Handler = Callable[[httpx.Request], "httpx.Response | Awaitable[httpx.Response]"]
 
-    def __init__(self, handler: Callable[[httpx.Request], httpx.Response]) -> None:
+
+class Recorder:
+    """A transport that records every request it was asked to send.
+
+    The handler may be async, so a fake can block the way a real long-poll does.
+    The SDK only ever sends through an async client, which awaits the result.
+    """
+
+    def __init__(self, handler: Handler) -> None:
         self.calls: list[httpx.Request] = []
         self.transport = httpx.MockTransport(self._send)
         self._handler = handler
 
-    def _send(self, request: httpx.Request) -> httpx.Response:
+    async def _send(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
-        return self._handler(request)
+        result = self._handler(request)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     @property
     def urls(self) -> list[str]:

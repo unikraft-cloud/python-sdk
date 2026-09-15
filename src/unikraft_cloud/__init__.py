@@ -59,6 +59,17 @@ from .core.patch import REMOVE, PatchItem, PatchOp, Remove, ResourceEditor
 from .core.resource import MetroGroup, Resource, ScopeOptions
 from .core.response import Ref, RefLike, or_absent
 from .core.session import Session, SessionConfig
+from .plugins import Plugin, PluginRoute
+from .plugins.sandbox import (
+    Command,
+    CommandLogs,
+    ExecResult,
+    ExecTimeoutError,
+    OutputChunk,
+    PluginNotReadyError,
+    Sandbox,
+    SandboxFiles,
+)
 from .resources.certificates import (
     Certificate,
     CertificateHandle,
@@ -125,6 +136,8 @@ __all__ = [
     "CertificateHandle",
     "CertificateSet",
     "Certificates",
+    "Command",
+    "CommandLogs",
     "ControlPlaneApi",
     "DeletedCertificate",
     "DeletedInstance",
@@ -132,6 +145,8 @@ __all__ = [
     "DeletedVolume",
     "DetachedVolume",
     "ErrorKind",
+    "ExecResult",
+    "ExecTimeoutError",
     "HandleSet",
     "HandleSteps",
     "Instance",
@@ -156,9 +171,13 @@ __all__ = [
     "MetroScope",
     "MetroTarget",
     "NotFoundError",
+    "OutputChunk",
     "PatchItem",
     "PatchOp",
     "PlatformApi",
+    "Plugin",
+    "PluginNotReadyError",
+    "PluginRoute",
     "PluginsApi",
     "Quotas",
     "RateLimitError",
@@ -170,7 +189,9 @@ __all__ = [
     "ResourceEditor",
     "ResourceHandle",
     "ResponseError",
+    "Sandbox",
     "SandboxApi",
+    "SandboxFiles",
     "Scope",
     "ScopeOptions",
     "ServerError",
