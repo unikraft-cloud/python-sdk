@@ -26,26 +26,33 @@ OUTPUT        ?= ./src/unikraft_cloud/api
 .PHONY: all
 all: generate test
 
+# Each per-spec target clears its generated modules first, so a tag the spec
+# drops leaves no stale client behind. The hand-written `__init__.py` files stay.
 .PHONY: generate
-generate: ## Regenerate both plumbing clients from the OpenAPI specs.
-	# Generated modules are cleared first, so a tag the spec drops leaves no
-	# stale client behind. The hand-written `__init__.py` files stay.
-	rm -f $(OUTPUT)/platform/*_gen.py $(OUTPUT)/controlplane/*_gen.py
-	# Namespaced schema names (`Instances.Instance`) are not Python identifiers,
-	# so the namespace is stripped from them.
+generate: generate-platform generate-controlplane ## Regenerate every plumbing client from the OpenAPI specs.
+	$(MAKE) fmt
+
+# Namespaced schema names (`Instances.Instance`) are not Python identifiers, so
+# `--namespace-flatten strip` removes the namespace.
+.PHONY: generate-platform
+generate-platform: ## Regenerate the platform API plumbing.
+	rm -f $(OUTPUT)/platform/*_gen.py
 	$(OPENAPI_GEN) \
 		-i $(PLATFORM_SPEC) \
 		-o $(OUTPUT)/platform \
 		-t $(TEMPLATES) \
 		--namespace-flatten strip \
 		-v package=api
+
+.PHONY: generate-controlplane
+generate-controlplane: ## Regenerate the control-plane API plumbing.
+	rm -f $(OUTPUT)/controlplane/*_gen.py
 	$(OPENAPI_GEN) \
 		-i $(CONTROLPLANE_SPEC) \
 		-o $(OUTPUT)/controlplane \
 		-t $(TEMPLATES) \
 		--namespace-flatten strip \
 		-v package=api
-	$(MAKE) fmt
 
 .PHONY: fmt
 fmt: ## Format the generated (and all) sources.

@@ -1,4 +1,8 @@
 {{- $ops := .Operations -}}
+{{- /* Where the shared transport lives, relative to the generated package. The
+       platform and control-plane packages sit at api/<name>/, which the default
+       fits; a package elsewhere passes `-v core=<path>`. */ -}}
+{{- $core := .Var "core" "...core" -}}
 {{- /* One file per tag: a "plumbing" client class exposing every operation for
        that resource, returning the raw response envelope. */ -}}
 {{- range $tag := uniqueTags $ops }}
@@ -9,11 +13,24 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
-{{- /* Path parameters are percent-encoded on the way out, so only the clients
-       that have any need the import. */ -}}
+{{- /* Path parameters are percent-encoded on the way out, and a raw-bytes
+       response has a payload type of its own, so only the clients that have
+       either need the import. */ -}}
 {{- $quoted := false }}
+{{- $raw := false }}
 {{- range $op := $ops }}
-{{- if and (eq (first $op.Operation.Tags) $tag) (pathParameters $op) }}{{ $quoted = true }}{{ end }}
+{{- if eq (first $op.Operation.Tags) $tag }}
+{{- if pathParameters $op }}{{ $quoted = true }}{{ end }}
+{{- $seen := false }}
+{{- range $entry := sortedResponseCodes $op.Operation.Responses }}
+{{- if and (not $seen) (or (hasPrefix "2" $entry.Code) (eq $entry.Code "default")) }}
+{{- $seen = true }}
+{{- with $entry.Ref }}{{ with .Value }}
+{{- if and (index .Content "application/octet-stream") (not (index .Content "application/json")) }}{{ $raw = true }}{{ end }}
+{{- end }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- if $quoted }}
 from urllib.parse import quote
@@ -28,7 +45,7 @@ from urllib.parse import quote
 {{- end }}
 {{- end }}
 
-from ...core.http import UNSET, ApiClient, TimeoutOption{{ if $csv }}, comma_separated{{ end }}
+from {{ $core }}.http import UNSET, ApiClient, {{ if $raw }}RawResponse, {{ end }}TimeoutOption{{ if $csv }}, comma_separated{{ end }}
 from . import models_gen as models
 
 
@@ -68,6 +85,25 @@ class {{ pascalcase $tag }}Api(ApiClient):
 {{- else -}}
 {{- $sse = false -}}
 {{- end -}}
+{{- /* An operation whose success response is `application/octet-stream` returns
+       its payload verbatim, unenveloped: a file download, a command's output
+       stream. It is fetched via ApiClient._request_bytes() and returned as a
+       RawResponse, because the status and headers (a 206 and its
+       Content-Range) carry meaning there. */ -}}
+{{- $raw := false -}}
+{{- $seen := false -}}
+{{- range $entry := sortedResponseCodes $op.Responses -}}
+{{- if and (not $seen) (or (hasPrefix "2" $entry.Code) (eq $entry.Code "default")) -}}
+{{- $seen = true -}}
+{{- with $entry.Ref -}}{{- with .Value -}}
+{{- if and (index .Content "application/octet-stream") (not (index .Content "application/json")) -}}{{- $raw = true -}}{{- end -}}
+{{- end -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* Header parameters become keyword arguments and are merged over the
+       caller's own headers, so `Range` is as easy to pass as a query filter. */ -}}
+{{- $hdrs := list -}}
+{{- range $op.Parameters -}}{{- with .Value -}}{{- if eq .In "header" -}}{{- $hdrs = append $hdrs . -}}{{- end -}}{{- end -}}{{- end -}}
 {{- $bodyRef := requestJSONSchema $op -}}
 {{- $bodyReq := requestBodyRequired $op -}}
 {{- $query := queryParameters . -}}
@@ -123,13 +159,16 @@ class {{ pascalcase $tag }}Api(ApiClient):
         {{- range $query }}
         {{ pySafeName .Name }}: {{ qualifyModels "models" (paramToPyType .) }} | None = None,
         {{- end }}
+        {{- range $hdrs }}
+        {{ pySafeName (snakecase .Name) }}: {{ qualifyModels "models" (paramToPyType .) }} | None = None,
+        {{- end }}
         {{- if $bodyRef }}
         body: {{ qualifyModels "models" (pyTypeRef $bodyRef) }}{{ if not $bodyReq }} | None = None{{ end }},
         {{- end }}
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
-    ) -> {{ if $sse }}AsyncIterator[{{ $ret }}]{{ else if eq $ret "" }}None{{ else }}{{ $ret }}{{ end }}:
+    ) -> {{ if $sse }}AsyncIterator[{{ $ret }}]{{ else if $raw }}RawResponse{{ else if eq $ret "" }}None{{ else }}{{ $ret }}{{ end }}:
 {{- with $op.Summary }}
         {{ pyDoc . "        " }}
 {{- else }}
@@ -137,7 +176,14 @@ class {{ pascalcase $tag }}Api(ApiClient):
         {{ pyDoc . "        " }}
 {{- end }}
 {{- end }}
-        return {{ if not $sse }}await {{ end }}self.{{ if $sse }}_stream{{ else if eq $ret "" }}_request_no_content{{ else }}_request{{ end }}(
+{{- if $hdrs }}
+        request_headers: dict[str, str] = dict(headers or {})
+        {{- range $hdrs }}
+        if {{ pySafeName (snakecase .Name) }} is not None:
+            request_headers["{{ .Name }}"] = {{ pySafeName (snakecase .Name) }}
+        {{- end }}
+{{- end }}
+        return {{ if not $sse }}await {{ end }}self.{{ if $sse }}_stream{{ else if $raw }}_request_bytes{{ else if eq $ret "" }}_request_no_content{{ else }}_request{{ end }}(
             {{ if or $sse (ne $ret "") }}{{ $ret }},
             {{ end }}method="{{ .Method }}",
             {{ if pathParameters . }}path=f"{{ $path }}"{{ else }}path="{{ $path }}"{{ end }},
@@ -157,7 +203,7 @@ class {{ pascalcase $tag }}Api(ApiClient):
             {{- if $bodyRef }}
             body=body,
             {{- end }}
-            headers=headers,
+            headers={{ if $hdrs }}request_headers{{ else }}headers{{ end }},
             base_url=base_url,
             timeout=timeout,
         )
