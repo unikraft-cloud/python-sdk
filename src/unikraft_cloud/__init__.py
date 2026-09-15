@@ -39,6 +39,7 @@ from .core.http import (
     ApiClient,
     ApiClientConfig,
     CallOptions,
+    RawResponse,
     TimeoutOption,
     Unset,
 )
@@ -160,6 +161,7 @@ __all__ = [
     "PlatformApi",
     "Quotas",
     "RateLimitError",
+    "RawResponse",
     "Ref",
     "RefLike",
     "Remove",

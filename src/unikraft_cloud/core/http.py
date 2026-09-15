@@ -33,6 +33,7 @@ __all__ = [
     "CallOptions",
     "CommaSeparated",
     "QueryValue",
+    "RawResponse",
     "TimeoutOption",
     "Unset",
     "comma_separated",
@@ -122,6 +123,67 @@ def normalise_base_url(base_url: str) -> str:
     duplicated into ``/v1/v1/...``.
     """
     return _API_VERSION.sub("", base_url.rstrip("/"))
+
+
+@dataclass(frozen=True)
+class RawResponse:
+    """The payload of an operation that answers with raw bytes, unenveloped.
+
+    A few operations (a file download, a command's output stream) return their
+    payload verbatim rather than inside the JSON envelope. The status and headers
+    travel with the bytes because they carry meaning of their own there: a
+    ``206`` answers a ``Range`` request, and its ``Content-Range`` header says
+    which bytes these are and how many there are in total.
+    """
+
+    #: The response body, untouched.
+    content: bytes
+    #: The HTTP status code: ``200`` for a whole payload, ``206`` for a part.
+    status: int
+    #: The response headers, case-insensitive.
+    headers: httpx.Headers
+
+    @property
+    def content_range(self) -> str | None:
+        """The ``Content-Range`` header of a partial response, verbatim, if any."""
+        value: str | None = self.headers.get("content-range")
+        return value
+
+    @property
+    def byte_range(self) -> tuple[int, int] | None:
+        """The first and last byte this payload covers, when ``Content-Range`` names them.
+
+        A ``206`` to a ``Range`` request says ``bytes 0-99/500``; this is
+        ``(0, 99)``. A whole payload, or an unsatisfiable range, has none.
+        """
+        parsed = _parse_content_range(self.content_range)
+        return parsed[0] if parsed else None
+
+    @property
+    def total_size(self) -> int | None:
+        """How many bytes the whole payload has, when ``Content-Range`` says.
+
+        ``bytes 0-99/500`` and ``bytes */500`` both say ``500``; a ``*`` in its
+        place says the server does not know.
+        """
+        parsed = _parse_content_range(self.content_range)
+        return parsed[1] if parsed else None
+
+
+#: ``bytes <first>-<last>/<total>``, with ``*`` for a range or total not known.
+_CONTENT_RANGE = re.compile(r"^\s*bytes\s+(?:(\d+)-(\d+)|\*)/(\d+|\*)\s*$", re.IGNORECASE)
+
+
+def _parse_content_range(value: str | None) -> tuple[tuple[int, int] | None, int | None] | None:
+    """Split a ``Content-Range`` header into its range and its total, if it parses."""
+    if value is None:
+        return None
+    match = _CONTENT_RANGE.match(value)
+    if match is None:
+        return None
+    first, last, total = match.groups()
+    byte_range = (int(first), int(last)) if first is not None and last is not None else None
+    return byte_range, None if total == "*" else int(total)
 
 
 #: Separator between two server-sent events (``\n\n``, ``\r\n\r\n`` or ``\r\r``).
@@ -442,6 +504,85 @@ class ApiClient(_PoolOwner):
         )
         response = await self._send(request, stream=False)
         self._raise_for_status(response, self._parse_json(response, request.url))
+
+    async def _request_bytes(
+        self,
+        *,
+        method: str,
+        path: str,
+        query: Mapping[str, QueryValue] | None = None,
+        body: Any = None,
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> RawResponse:
+        """Perform a request whose success response is a raw byte payload.
+
+        Only a 2xx body comes back untouched. A failure still arrives as the JSON
+        envelope (or an empty body), so it is parsed and raised exactly as it is
+        for an enveloped operation.
+        """
+        request = self._build_request(
+            method=method,
+            path=path,
+            accept="application/octet-stream",
+            query=query,
+            body=body,
+            headers=headers,
+            base_url=base_url,
+            timeout=timeout,
+        )
+        response = await self._send(request, stream=False)
+        if not response.is_success:
+            self._raise_for_status(response, self._parse_json(response, request.url))
+        return RawResponse(
+            content=response.content, status=response.status_code, headers=response.headers
+        )
+
+    async def _stream_bytes(
+        self,
+        *,
+        method: str,
+        path: str,
+        query: Mapping[str, QueryValue] | None = None,
+        body: Any = None,
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+        chunk_size: int | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Yield a raw byte payload as it arrives, without holding it all in memory.
+
+        The iterator ends when the server closes the body. Close it to stop early
+        and release the connection at once, with ``contextlib.aclosing`` or its
+        ``aclose()``; a ``break`` alone leaves that to garbage collection. A failure
+        is raised before the first chunk, exactly as :meth:`_request_bytes` raises it.
+        """
+        request = self._build_request(
+            method=method,
+            path=path,
+            accept="application/octet-stream",
+            query=query,
+            body=body,
+            headers=headers,
+            base_url=base_url,
+            timeout=timeout,
+        )
+        response = await self._send(request, stream=True)
+        try:
+            if not response.is_success:
+                await response.aread()
+                self._raise_for_status(response, self._parse_json(response, request.url))
+            async for chunk in response.aiter_bytes(chunk_size):
+                yield chunk
+        except httpx.HTTPError as cause:
+            # The headers arrived, so `_send` let this through; the body can still
+            # fail mid-stream, and that is a network error like any other.
+            raise self._network_error(request, cause) from cause
+        finally:
+            # Close on early return or raise so the connection is not left
+            # dangling mid-stream.
+            await response.aclose()
 
     async def _stream(
         self,
