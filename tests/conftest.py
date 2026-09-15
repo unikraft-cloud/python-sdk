@@ -17,6 +17,7 @@ __all__ = [
     "certificate",
     "changed_instance",
     "envelope",
+    "image",
     "instance",
     "instance_logs",
     "metro",
@@ -223,6 +224,18 @@ def quotas(uuid: str = "q1", **overrides: Any) -> dict[str, Any]:
     stats = {name: 0 for name, f in models.QuotasStats.model_fields.items() if f.is_required()}
     limits = {name: 0 for name, f in models.QuotasLimits.model_fields.items() if f.is_required()}
     return {"uuid": uuid, "used": stats, "hard": stats, "limits": limits, **overrides}
+
+
+def image(url: str = "index.unikraft.io/org/app:latest", **overrides: Any) -> dict[str, Any]:
+    """An image, carrying every field the specification requires."""
+    return {
+        "url": url,
+        "created_at": "2026-01-01T00:00:00Z",
+        "initrd_or_rom": True,
+        "size_in_bytes": 4096,
+        "tags": ["latest"],
+        **overrides,
+    }
 
 
 def metro(code: str, *, name: str | None = None) -> dict[str, Any]:

@@ -267,8 +267,8 @@ except MetroFanoutError as err:
 
 ## Resources
 
-`instances`, `volumes`, `services`, `certificates` and `users` hang off any scope —
-`ukc`, `ukc.metro("fra")` or `ukc.metros([...])`.
+`instances`, `images`, `volumes`, `services`, `certificates` and `users` hang off any
+scope — `ukc`, `ukc.metro("fra")` or `ukc.metros([...])`.
 
 Creating one takes the properties the API describes as keyword arguments, and a property
 it does not have is a `TypeError` rather than a field the server quietly ignores.

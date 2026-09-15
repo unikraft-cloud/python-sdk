@@ -23,6 +23,7 @@ from .core.metro import (
 )
 from .core.session import Session, SessionConfig
 from .resources.certificates import Certificates
+from .resources.images import Images
 from .resources.instances import Instances
 from .resources.service_groups import ServiceGroups
 from .resources.users import Users
@@ -46,6 +47,8 @@ class Scope:
         self.scope = scope
         #: Instances (microVMs).
         self.instances = Instances(session, scope)
+        #: Images: what each metro's nodes cache, and what the registry holds.
+        self.images = Images(session, scope)
         #: Persistent volumes.
         self.volumes = Volumes(session, scope)
         #: Service groups (load-balanced networking).

@@ -78,6 +78,7 @@ from .resources.certificates import (
     CertificateSet,
     DeletedCertificate,
 )
+from .resources.images import Image, Images
 from .resources.instances import (
     DeletedInstance,
     Instance,
@@ -150,6 +151,8 @@ __all__ = [
     "ExecTimeoutError",
     "HandleSet",
     "HandleSteps",
+    "Image",
+    "Images",
     "Instance",
     "InstanceEditor",
     "InstanceHandle",
