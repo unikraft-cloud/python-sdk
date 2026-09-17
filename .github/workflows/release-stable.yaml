@@ -2,7 +2,8 @@ name: release-stable
 
 on:
   push:
-    branches: [prod-staging]
+    branches:
+    - prod-staging
 
 permissions:
   deployments: write

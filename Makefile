@@ -1,30 +1,79 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Copyright (c) 2025, Unikraft GmbH.
-# Licensed under the BSD-3-Clause License (the "License").
-# You may not use this file except in compliance with the License.
+# Copyright (c) 2026, Unikraft GmbH. All rights reserved.
 
-# Prelude
-WORKDIR ?= $(CURDIR)
-Q       ?= @
-CHANNEL ?= prod-stable
+# Release channel to generate against (maps to a branch of the openapi repo).
+CHANNEL           ?= prod-staging
+SPEC_BASE         ?= https://raw.githubusercontent.com/unikraft-cloud/openapi/refs/heads/$(CHANNEL)
+PLATFORM_SPEC     ?= $(SPEC_BASE)/platform.json
+CONTROLPLANE_SPEC ?= $(SPEC_BASE)/controlplane.json
 
-# Tools
-WGET ?= wget
-UV   ?= uv
+# Both specs also live in the proto repository, which is where the changes land
+# first. Generate against a local checkout of it with:
+#   make generate \
+#     PLATFORM_SPEC=../proto/gen/openapi/platform/openapi.yaml \
+#     CONTROLPLANE_SPEC=../proto/gen/openapi/controlplane/openapi.yaml
+
+# The openapi-gen code generator, pinned so a regeneration is reproducible.
+# Raise OPENAPI_GEN_VERSION to take a newer one.
+GO                   ?= go
+UV                   ?= uv
+OPENAPI_GEN_VERSION  ?= v0.0.0-20260915145300-fef7701a6874
+OPENAPI_GEN          ?= $(GO) run unikraft.com/x/tools/openapi-gen@$(OPENAPI_GEN_VERSION)
+
+TEMPLATES     ?= ./templates
+OUTPUT        ?= ./src/unikraft_cloud/api
 
 .PHONY: all
-all: generate
+all: generate test
 
 .PHONY: generate
-generate: platform
+generate: ## Regenerate both plumbing clients from the OpenAPI specs.
+	# Generated modules are cleared first, so a tag the spec drops leaves no
+	# stale client behind. The hand-written `__init__.py` files stay.
+	rm -f $(OUTPUT)/platform/*_gen.py $(OUTPUT)/controlplane/*_gen.py
+	# Namespaced schema names (`Instances.Instance`) are not Python identifiers,
+	# so the namespace is stripped from them.
+	$(OPENAPI_GEN) \
+		-i $(PLATFORM_SPEC) \
+		-o $(OUTPUT)/platform \
+		-t $(TEMPLATES) \
+		--namespace-flatten strip \
+		-v package=api
+	$(OPENAPI_GEN) \
+		-i $(CONTROLPLANE_SPEC) \
+		-o $(OUTPUT)/controlplane \
+		-t $(TEMPLATES) \
+		--namespace-flatten strip \
+		-v package=api
+	$(MAKE) fmt
 
-.PHONY: platform
-platform:
-	$(Q)rm -rf $(WORKDIR)/unikraft_cloud_platform
-	$(Q)$(UV) tool run openapi-python-client generate \
-		--url https://raw.githubusercontent.com/unikraft-cloud/openapi/$(CHANNEL)/platform.json \
-		--config $(WORKDIR)/.platform-config.yaml \
-		--custom-template-path $(WORKDIR)/templates \
-		--overwrite \
-		--output-path $(WORKDIR) \
-		--meta uv \
+.PHONY: fmt
+fmt: ## Format the generated (and all) sources.
+	$(UV) run ruff check --select I --fix $(OUTPUT)
+	$(UV) run ruff format $(OUTPUT)
+
+.PHONY: typecheck
+typecheck: ## Type-check the whole project.
+	$(UV) run mypy
+
+.PHONY: lint
+lint: ## Lint and format-check with Ruff.
+	$(UV) run ruff check .
+	$(UV) run ruff format --check .
+
+.PHONY: test
+test: ## Run the test suite.
+	$(UV) run pytest
+
+.PHONY: build
+build: ## Build the sdist and wheel.
+	$(UV) build
+
+.PHONY: clean
+clean: ## Remove build output.
+	rm -rf dist
+
+.PHONY: help
+help: ## Show this help.
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
