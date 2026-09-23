@@ -1327,3 +1327,107 @@ class TestDeleting:
             with pytest.raises(MetroFanoutError):
                 await ukc.instances.each(name="ghost").delete(missing_ok=True)
         assert not [call for call in recorder.calls if call.method == "DELETE"]
+
+
+class TestEachByTags:
+    def _tagged(self, per_metro: Callable[[str], list[dict[str, Any]]]) -> Recorder:
+        """A platform whose tag listings differ per metro, and which deletes what it lists."""
+
+        def route(request: httpx.Request) -> tuple[int, Any]:
+            if request.url.path == "/v1/metros":
+                return 200, envelope({"metros": METROS})
+            where = metro_of(request)
+            if request.method == "DELETE":
+                sent = json.loads(request.content)
+                if where == "dal" and sent[0].get("uuid") == "gone":
+                    return 200, envelope({"instances": [missing(uuid="gone")]}, status="error")
+                return 200, envelope(
+                    {"instances": [changed_instance(item["uuid"]) for item in sent]}
+                )
+            rows = [] if request.url.params.get("from") else per_metro(where)
+            return 200, envelope({"instances": rows})
+
+        return routed(route)
+
+    async def test_addresses_every_match_in_every_metro(self) -> None:
+        recorder = self._tagged(lambda where: [instance(f"{where}-1"), instance(f"{where}-2")])
+        async with client(recorder) as ukc:
+            deleted = await ukc.instances.each(tags=["batch", "job=1"]).delete()
+        assert sorted((item.metro, item.uuid) for item in deleted) == [
+            ("dal", "dal-1"),
+            ("dal", "dal-2"),
+            ("fra", "fra-1"),
+            ("fra", "fra-2"),
+        ]
+        listings = [
+            call for call in recorder.calls if call.method == "GET" and "instances" in call.url.path
+        ]
+        assert all(call.url.params["tags"] == "batch,job=1" for call in listings)
+        assert all(call.url.params["details"] == "true" for call in listings)
+        deletes = [call for call in recorder.calls if call.method == "DELETE"]
+        assert sorted(metro_of(call) for call in deletes) == ["dal", "dal", "fra", "fra"]
+
+    async def test_the_matches_are_read_without_another_request(self) -> None:
+        recorder = self._tagged(lambda where: [instance(f"{where}-1")] if where == "fra" else [])
+        async with client(recorder) as ukc:
+            matches = ukc.instances.each(tags=["job=1"])
+            assert await matches.where() == ["fra"]
+            assert [inst.uuid for inst in await matches] == ["fra-1"]
+        assert all(call.method == "GET" for call in recorder.calls)
+        assert sorted(recorder.metros("/v1/instances")) == ["dal", "fra"]
+
+    async def test_tags_selecting_nothing_are_an_empty_set(self) -> None:
+        recorder = self._tagged(lambda where: [])
+        async with client(recorder) as ukc:
+            matches = ukc.instances.each(tags=["job=none"])
+            assert await matches.size() == 0
+            assert await matches.delete() == []
+
+    async def test_a_lookup_route_that_is_not_there_is_raised_at_once(self) -> None:
+        recorder = routed(lambda request: (404, {"status": "error", "message": "no such route"}))
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(NotFoundError) as caught:
+                await ukc.instances.each(tags=["batch"]).delete(missing_ok=True)
+        assert not caught.value.absent
+        assert [call.method for call in recorder.calls] == ["GET"]
+
+    async def test_a_match_gone_before_its_delete_is_left_out(self) -> None:
+        recorder = self._tagged(
+            lambda where: [instance("gone")] if where == "dal" else [instance("kept")]
+        )
+        async with client(recorder) as ukc:
+            deleted = await ukc.instances.each(tags=["job=1"]).delete(missing_ok=True)
+        assert [(item.metro, item.uuid) for item in deleted] == [("fra", "kept")]
+
+    async def test_a_metro_that_fails_reports_the_instances_that_did_arrive(self) -> None:
+        def route(request: httpx.Request) -> tuple[int, Any]:
+            if request.url.path == "/v1/metros":
+                return 200, envelope({"metros": METROS})
+            if metro_of(request) == "dal":
+                return 500, {"status": "error", "message": "dal is down"}
+            rows = [] if request.url.params.get("from") else [instance("fra-1")]
+            return 200, envelope({"instances": rows})
+
+        recorder = routed(route)
+        async with client(recorder) as ukc:
+            with pytest.raises(MetroFanoutError) as caught:
+                await ukc.instances.each(tags=["job=1"]).delete()
+        assert [failure.metro for failure in caught.value.failures] == ["dal"]
+        assert [(inst.metro, inst.uuid) for inst in caught.value.results] == [("fra", "fra-1")]
+        assert not [call for call in recorder.calls if call.method == "DELETE"]
+
+    async def test_a_pinned_client_asks_its_one_metro_only(self) -> None:
+        recorder = self._tagged(lambda where: [instance(f"{where}-1")])
+        async with client(recorder, metro="fra") as ukc:
+            deleted = await ukc.instances.each(tags=["job=1"]).delete()
+        assert [(item.metro, item.uuid) for item in deleted] == [("fra", "fra-1")]
+        assert "/v1/metros" not in recorder.paths
+
+    async def test_tags_stand_alone(self) -> None:
+        recorder = self._tagged(lambda where: [])
+        async with client(recorder) as ukc:
+            with pytest.raises(TypeError, match="on its own"):
+                ukc.instances.each(name="web", tags=["job=1"])
+            with pytest.raises(TypeError, match="at least one tag"):
+                ukc.instances.each(tags=[])
+        assert recorder.calls == []

@@ -300,6 +300,32 @@ for quota in await ukc.users.quotas():
     print(quota.metro, quota.used, quota.hard)
 ```
 
+### Instances
+
+Beyond the operations above, instances can be addressed by their tags, deleted with a wait
+and a retry while busy, and asked why they stopped:
+
+```python
+# Every instance in scope carrying all of the tags, however many; nothing matched is an
+# empty set, so a cleanup can run again.
+await ukc.instances.each(tags=["batch", "job=42"]).delete(missing_ok=True)
+async for inst in ukc.instances.list(tags=["batch"], details=True):
+    ...
+
+# Wait for the deletion (-1 for as long as the platform allows), forgive an instance
+# that is already gone, and keep trying while something still holds on to it. The read
+# timeout is stretched to outlast the wait only when no `timeout` was given.
+await fra.instances.get(name="relay").delete(timeout_seconds=60, missing_ok=True, retry_busy=20)
+
+from unikraft_cloud import StopReason
+
+inst = await fra.instances.get(name="web")
+if inst.state == "stopped":
+    print(inst.describe_stop())  # e.g. "kernel crash: out of memory (ENOMEM)"
+    if inst.stop and inst.stop.reason & StopReason.KERNEL:
+        print(inst.stop.kernel_code)
+```
+
 ### Images
 
 The metros report what their nodes have cached; the registry says what a node can pull.

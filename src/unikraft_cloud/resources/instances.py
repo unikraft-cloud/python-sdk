@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from ..api.platform import models
 from ..api.platform.instances_gen import InstancesApi
 from ..core.errors import NotFoundError, ResponseError, UnikraftCloudError, WaitTimeoutError
-from ..core.fanout import MetroFanoutError, fanout
+from ..core.fanout import MetroFanoutError, fanout, fanout_collect
 from ..core.handle import HandleSteps, Located, MetroTarget, ResourceHandle
 from ..core.handle_set import HandleSet
 from ..core.http import UNSET, CallOptions, TimeoutOption, comma_separated
@@ -947,25 +947,38 @@ class Instances(Resource[InstancesApi]):
         *,
         uuid: str | None = None,
         name: str | None = None,
+        tags: Sequence[str] | None = None,
         metro: str | None = None,
         metros: MetroScope | None = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> InstanceSet:
-        """Reference every instance matching a name -- one per metro that holds it.
+        """Reference every instance matching a name, or every instance carrying some tags.
 
         A name can exist in several metros at once; this addresses all of them,
-        where :meth:`get` insists you pick one.
+        one per metro that holds it, where :meth:`get` insists you pick one.
+
+        ``tags`` instead selects every instance in scope carrying all of them,
+        however many a metro holds. Tags that select nothing are an empty set
+        rather than a failure, so a cleanup can run again.
 
         .. code-block:: python
 
             await ukc.instances.each(name="web").suspend()  # in every metro
             [inst.metro for inst in await ukc.instances.each(name="web")]
+            await ukc.instances.each(tags=["job=1234"]).delete(missing_ok=True)
         """
-        ref = Ref(uuid=uuid, name=name, metro=metro)
         call = options(headers, base_url, timeout)
         opts = scoped(call, metros)
+        if tags is not None:
+            if uuid is not None or name is not None or metro is not None:
+                raise TypeError(
+                    "`tags` selects instances on its own: drop `uuid`, `name` and `metro`, "
+                    "or narrow the metros with `metros`."
+                )
+            return self._tagged(list(tags), call, opts)
+        ref = Ref(uuid=uuid, name=name, metro=metro)
 
         async def locate() -> builtins.list[InstanceHandle[Instance]]:
             located = await self._locate_all(
@@ -986,6 +999,56 @@ class Instances(Resource[InstancesApi]):
             ]
 
         return InstanceSet(locate, f"instance {describe_ref(ref)}")
+
+    def _tagged(
+        self, tags: builtins.list[str], call: CallOptions, opts: ScopeOptions
+    ) -> InstanceSet:
+        """Every instance in scope carrying all of ``tags``, each already located."""
+        if not tags:
+            raise TypeError(
+                "`tags` needs at least one tag: none at all would select every instance."
+            )
+        what = f"instances tagged {', '.join(tags)}"
+
+        async def in_metro(endpoint: MetroEndpoint) -> builtins.list[Located[Instance]]:
+            found = self._pages(endpoint, opts, details=True, tags=tags, page_size=None)
+            return [
+                Located(
+                    target=MetroTarget(
+                        metro=endpoint.metro, base_url=endpoint.base_url, ref=_ref_of(inst)
+                    ),
+                    value=inst,
+                )
+                async for inst in found
+            ]
+
+        async def locate() -> builtins.list[InstanceHandle[Instance]]:
+            endpoints = await self._endpoints(opts)
+            if len(endpoints) == 1:
+                hits = await in_metro(endpoints[0])
+            else:
+                try:
+                    hits = await fanout_collect(endpoints, in_metro)
+                except MetroFanoutError as err:
+                    # What did arrive is reported as instances, as every other
+                    # partial answer is, not as the located matches built here.
+                    err.results = [hit.value for hit in err.results]
+                    raise
+            return [
+                InstanceHandle(
+                    self,
+                    HandleSteps(
+                        locate=resolved(hit),
+                        fetch=lambda target: self.read(target, opts),
+                        what=what,
+                        located=True,
+                        options=call,
+                    ),
+                )
+                for hit in hits
+            ]
+
+        return InstanceSet(locate, what)
 
     def list(
         self,
@@ -1019,22 +1082,35 @@ class Instances(Resource[InstancesApi]):
             endpoints = await self._endpoints(opts)
 
             def per_metro(endpoint: MetroEndpoint) -> AsyncIterator[Instance]:
-                async def fetch_page(count: int, start: str | None) -> builtins.list[Instance]:
-                    res = await self.api.get_instances(
-                        count=count,
-                        from_=start,
-                        details=details,
-                        tags=comma_separated(tags),
-                        **self._call(endpoint, opts),
-                    )
-                    return list_tagged(res, _KEY, endpoint.metro, Instance)
-
-                return paginate(fetch_page, lambda inst: inst.uuid, page_size)
+                return self._pages(endpoint, opts, details=details, tags=tags, page_size=page_size)
 
             async for instance in fanout(endpoints, per_metro):
                 yield instance
 
         return Listing(merged())
+
+    def _pages(
+        self,
+        endpoint: MetroEndpoint,
+        opts: ScopeOptions,
+        *,
+        details: bool | None,
+        tags: Sequence[str] | None,
+        page_size: int | None,
+    ) -> AsyncIterator[Instance]:
+        """One metro's listing, page by page, every instance tagged with the metro."""
+
+        async def fetch_page(count: int, start: str | None) -> builtins.list[Instance]:
+            res = await self.api.get_instances(
+                count=count,
+                from_=start,
+                details=details,
+                tags=comma_separated(tags),
+                **self._call(endpoint, opts),
+            )
+            return list_tagged(res, _KEY, endpoint.metro, Instance)
+
+        return paginate(fetch_page, lambda inst: inst.uuid, page_size)
 
     async def delete(
         self,
