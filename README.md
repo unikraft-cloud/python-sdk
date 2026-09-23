@@ -282,6 +282,22 @@ for quota in await ukc.users.quotas():
     print(quota.metro, quota.used, quota.hard)
 ```
 
+### Images
+
+The metros report what their nodes have cached; the registry says what a node can pull.
+`find` and `exists` ask the control plane, which answers from the registry itself, and
+read a reference as the CLI does: a registry host in front is ignored, a bare name is in
+the `official` namespace, and no tag means `latest`.
+
+```python
+for image in await ukc.images.list():
+    print(image.metro, image.url, image.size_in_bytes)
+
+if not await ukc.images.exists("org/app:1.2.3"):
+    build_and_push("org/app:1.2.3")
+found = await ukc.images.find("org/app@sha256:...")  # a tag of that digest, or None
+```
+
 ## The sandbox plugin
 
 A plugin is a helper loaded into an instance beside its workload, and reached through the

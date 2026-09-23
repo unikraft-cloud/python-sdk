@@ -78,7 +78,7 @@ from .resources.certificates import (
     CertificateSet,
     DeletedCertificate,
 )
-from .resources.images import Image, Images
+from .resources.images import Image, Images, RegistryImage
 from .resources.instances import (
     DeletedInstance,
     Instance,
@@ -189,6 +189,7 @@ __all__ = [
     "RawResponse",
     "Ref",
     "RefLike",
+    "RegistryImage",
     "Remove",
     "Resource",
     "ResourceEditor",
