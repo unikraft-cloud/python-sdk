@@ -54,8 +54,11 @@ from pydantic import BaseModel, ConfigDict, Field
 {{- $name := $m.SchemaName }}
 {{- /* A request body is the caller's to fill in, so a field the specification
   requires is required here too. A response is the server's, and one shape
-  serves several answers, so there every field stays optional. The TypeSpec
-  convention names request schemas `<Verb><Resource>Request*`. */ -}}
+  serves several answers, so there every field stays optional. Which is which
+  is told by name, as the TypeSpec convention `<Verb><Resource>Request*` has
+  it: a request schema named otherwise has every field optional, and a
+  response that carries a schema named `Request` fails to parse when the
+  server leaves a required field out. */ -}}
 {{- $request := and (contains "Request" $name) (not (contains "Response" $name)) }}
 {{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
 {{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
