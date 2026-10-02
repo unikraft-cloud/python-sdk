@@ -42,7 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field
 {{- $schema := $m.Schema }}
 {{- if $schema.Enum }}
 
-{{ $m.SchemaName }} = {{ enumPyLiteral $schema }}
+{{ $m.SchemaName }} = {{ enumPyLiteral $schema }}{{ if $schema.Nullable }} | None{{ end }}
 {{- with $schema.Description }}
 {{ pyDoc . "" }}
 {{- end }}
