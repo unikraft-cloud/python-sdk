@@ -93,6 +93,14 @@
 {{- else if not (or ($qt.Is "string") ($qt.Is "integer") ($qt.Is "number") ($qt.Is "boolean")) }}
 {{- fail (printf "%s %s: query parameter %q is not a scalar or an array of scalars, so the templates cannot serialize it" $op.Method $op.Path .Name) }}
 {{- end }}
+{{- /* The transport sends form style, exploded or comma-separated, and
+       percent-encodes every value. */ -}}
+{{- if ne (.SerializationMethod).Style "form" }}
+{{- fail (printf "%s %s: query parameter %q uses the %s style, which the transport cannot send" $op.Method $op.Path .Name (.SerializationMethod).Style) }}
+{{- end }}
+{{- if .AllowReserved }}
+{{- fail (printf "%s %s: query parameter %q allows reserved characters, which the transport percent-encodes" $op.Method $op.Path .Name) }}
+{{- end }}
 {{- if and (.Schema.Value.Type.Is "array") (not (.SerializationMethod).Explode) }}{{ $csv = true }}{{ end }}
 {{- end }}
 {{- end }}
@@ -150,6 +158,9 @@ class {{ pascalcase $tag }}Api(ApiClient):
 {{- $arg = printf "_text(%s)" $arg -}}
 {{- else -}}
 {{- fail (printf "%s %s: path parameter %q is not a scalar, so the templates cannot serialize it" $.Method $.Path .Name) -}}
+{{- end -}}
+{{- if ne (.SerializationMethod).Style "simple" -}}
+{{- fail (printf "%s %s: path parameter %q uses the %s style, which the templates render as simple; use simple style in the specification" $.Method $.Path .Name (.SerializationMethod).Style) -}}
 {{- end -}}
 {{- $path = replace (printf "{%s}" .Name) (printf "{quote(%s, safe='')}" $arg) $path -}}
 {{- end -}}
