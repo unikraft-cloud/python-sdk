@@ -60,6 +60,11 @@ from pydantic import BaseModel, ConfigDict, Field
   response that carries a schema named `Request` fails to parse when the
   server leaves a required field out. */ -}}
 {{- $request := and (contains "Request" $name) (not (contains "Response" $name)) }}
+{{- /* A union alias renders one union keyword and nothing else, so a schema
+  that adds allOf or the other union keyword to it is not what it renders. */ -}}
+{{- if and (or $schema.OneOf $schema.AnyOf) (or $schema.AllOf (and $schema.OneOf $schema.AnyOf)) }}
+{{- fail (printf "schema %s combines oneOf or anyOf with allOf or with each other, which the templates cannot render; split it in the specification" $name) }}
+{{- end }}
 {{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
 {{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
 {{- /* A map is an object with no properties of its own and a schema, or a
