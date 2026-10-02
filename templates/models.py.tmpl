@@ -44,7 +44,10 @@ from pydantic import BaseModel, ConfigDict, Field
 {{- $request := and (contains "Request" $name) (not (contains "Response" $name)) }}
 {{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
 {{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
-{{- if and (not $schema.Enum) (not $union) (not $scalar) }}
+{{- /* A map is an object with no properties of its own and a schema, or a
+  `true`, for the additional ones. Has is a *bool, read through toJson. */ -}}
+{{- $map := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) (or (not $schema.Type) ($schema.Type.Is "object")) (or $schema.AdditionalProperties.Schema (eq (toJson $schema.AdditionalProperties.Has) "true")) }}
+{{- if and (not $schema.Enum) (not $union) (not $scalar) (not $map) }}
 
 
 class {{ $name }}(BaseModel):
@@ -61,9 +64,20 @@ class {{ $name }}(BaseModel):
     # summary listing or a failed bulk item carries only some of them.
 {{- end }}
     model_config = ConfigDict(extra="allow", populate_by_name=True)
+{{- $fields := list }}
 {{ range $prop := propertyNamesOrdered $name $schema }}
 {{- $p := getProperty $schema $prop }}
+{{- /* A field is an attribute, so a name that is no identifier is spelled in
+  snake case and kept as the alias; one that still is none is refused. */ -}}
 {{- $safe := pySafeName $prop }}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $safe) }}{{ $safe = pySafeName (snakecase $prop) }}{{ end }}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $safe) }}
+{{- fail (printf "property %q of %s cannot name a Python field, even in snake case; rename it in the specification" $prop $name) }}
+{{- end }}
+{{- if has $safe $fields }}
+{{- fail (printf "property %q of %s renders the field %s, which another property renders too; rename one of them in the specification" $prop $name $safe) }}
+{{- end }}
+{{- $fields = append $fields $safe }}
 {{- /* A date-time is an ISO-8601 string on the wire; pydantic parses it into a
   `datetime` and writes it back out in the same form. */ -}}
 {{- $type := schemaToPyType $p }}
@@ -72,12 +86,12 @@ class {{ $name }}(BaseModel):
 {{- if eq $safe $prop }}
     {{ $safe }}: {{ $type }}
 {{- else }}
-    {{ $safe }}: {{ $type }} = Field(alias="{{ $prop }}")
+    {{ $safe }}: {{ $type }} = Field(alias={{ printf "%q" $prop }})
 {{- end }}
 {{- else if eq $safe $prop }}
     {{ $safe }}: {{ $type }} | None = None
 {{- else }}
-    {{ $safe }}: {{ $type }} | None = Field(default=None, alias="{{ $prop }}")
+    {{ $safe }}: {{ $type }} | None = Field(default=None, alias={{ printf "%q" $prop }})
 {{- end }}
 {{- with $p.Description }}
     {{ pyDoc . "    " }}
@@ -85,15 +99,19 @@ class {{ $name }}(BaseModel):
 {{- end }}
 {{- end }}
 {{- end }}
-{{- /* A schema that is only a union of branches, or a plain scalar or array,
-  is an alias, not a model: `Line = Shell | Args`, `Args = list[str]`. It comes
+{{- /* A schema that is only a union of branches, or a plain scalar, array or map,
+  is an alias, not a model: `Line = Shell | Args`, `Args = list[str]`,
+  `Env = dict[str, str]`. It comes
   after the models because the assignment evaluates the names it uses right
   here, where a field annotation would wait for the rebuild below. */ -}}
 {{- range $m := .Models }}
 {{- $schema := $m.Schema }}
 {{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
 {{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
-{{- if and (not $schema.Enum) (or $union $scalar) }}
+{{- /* A map is an object with no properties of its own and a schema, or a
+  `true`, for the additional ones. Has is a *bool, read through toJson. */ -}}
+{{- $map := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) (or (not $schema.Type) ($schema.Type.Is "object")) (or $schema.AdditionalProperties.Schema (eq (toJson $schema.AdditionalProperties.Has) "true")) }}
+{{- if and (not $schema.Enum) (or $union $scalar $map) }}
 
 {{ $m.SchemaName }} = {{ schemaToPyType $schema }}
 {{- with $schema.Description }}
@@ -111,7 +129,10 @@ for _model in (
 {{- $schema := $m.Schema }}
 {{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
 {{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
-{{- if and (not $schema.Enum) (not $union) (not $scalar) }}
+{{- /* A map is an object with no properties of its own and a schema, or a
+  `true`, for the additional ones. Has is a *bool, read through toJson. */ -}}
+{{- $map := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) (or (not $schema.Type) ($schema.Type.Is "object")) (or $schema.AdditionalProperties.Schema (eq (toJson $schema.AdditionalProperties.Has) "true")) }}
+{{- if and (not $schema.Enum) (not $union) (not $scalar) (not $map) }}
     {{ $m.SchemaName }},
 {{- end }}
 {{- end }}
