@@ -67,11 +67,12 @@ class {{ $name }}(BaseModel):
 {{- $fields := list }}
 {{ range $prop := propertyNamesOrdered $name $schema }}
 {{- $p := getProperty $schema $prop }}
-{{- /* A field is an attribute, so a name that is no identifier is spelled in
-  snake case and kept as the alias; one that still is none is refused. */ -}}
+{{- /* A field is an attribute, and one with a leading underscore is private to
+  pydantic, so a name that is no public identifier is spelled in snake case
+  and kept as the alias; one that still is none is refused. */ -}}
 {{- $safe := pySafeName $prop }}
-{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $safe) }}{{ $safe = pySafeName (snakecase $prop) }}{{ end }}
-{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $safe) }}
+{{- if not (regexMatch "^[A-Za-z][A-Za-z0-9_]*$" $safe) }}{{ $safe = pySafeName (snakecase $prop) }}{{ end }}
+{{- if not (regexMatch "^[A-Za-z][A-Za-z0-9_]*$" $safe) }}
 {{- fail (printf "property %q of %s cannot name a Python field, even in snake case; rename it in the specification" $prop $name) }}
 {{- end }}
 {{- if has $safe $fields }}

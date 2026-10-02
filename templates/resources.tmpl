@@ -76,6 +76,9 @@
 {{- range $op := $ops }}
 {{- if has $tag $op.Operation.Tags }}
 {{- range queryParameters $op }}
+{{- if not .Schema }}
+{{- fail (printf "%s %s: query parameter %q has no schema, so the templates cannot serialize it" $op.Method $op.Path .Name) }}
+{{- end }}
 {{- if and (.Schema.Value.Type.Is "array") (not (.SerializationMethod).Explode) }}{{ $csv = true }}{{ end }}
 {{- end }}
 {{- end }}
