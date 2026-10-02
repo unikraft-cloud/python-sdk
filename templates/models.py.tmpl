@@ -101,9 +101,12 @@ class {{ $name }}(BaseModel):
 {{- end }}
 {{- /* A schema that is only a union of branches, or a plain scalar, array or map,
   is an alias, not a model: `Line = Shell | Args`, `Args = list[str]`,
-  `Env = dict[str, str]`. It comes
-  after the models because the assignment evaluates the names it uses right
-  here, where a field annotation would wait for the rebuild below. */ -}}
+  `Env = dict[str, str]`. It comes after the models because the assignment
+  evaluates the names it uses right here, where a field annotation would wait
+  for the rebuild below. An alias that names another alias comes after it, so
+  the aliases go out in passes, each taking those whose aliases are all out;
+  one left at the end names itself. */ -}}
+{{- $aliases := list }}
 {{- range $m := .Models }}
 {{- $schema := $m.Schema }}
 {{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
@@ -111,12 +114,32 @@ class {{ $name }}(BaseModel):
 {{- /* A map is an object with no properties of its own and a schema, or a
   `true`, for the additional ones. Has is a *bool, read through toJson. */ -}}
 {{- $map := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) (or (not $schema.Type) ($schema.Type.Is "object")) (or $schema.AdditionalProperties.Schema (eq (toJson $schema.AdditionalProperties.Has) "true")) }}
-{{- if and (not $schema.Enum) (or $union $scalar $map) }}
+{{- if and (not $schema.Enum) (or $union $scalar $map) }}{{ $aliases = append $aliases $m.SchemaName }}{{ end }}
+{{- end }}
+{{- $emitted := list }}
+{{- range $pass := $aliases }}
+{{- range $m := $.Models }}
+{{- $name := $m.SchemaName }}
+{{- if and (has $name $aliases) (not (has $name $emitted)) }}
+{{- $code := schemaToPyType $m.Schema }}
+{{- $ready := true }}
+{{- range $other := $aliases }}
+{{- if and (not (has $other $emitted)) (regexMatch (printf "\\b%s\\b" $other) $code) }}{{ $ready = false }}{{ end }}
+{{- end }}
+{{- if $ready }}
 
-{{ $m.SchemaName }} = {{ schemaToPyType $schema }}
-{{- with $schema.Description }}
+{{ $name }} = {{ $code }}
+{{- with $m.Schema.Description }}
 {{ pyDoc . "" }}
 {{- end }}
+{{- $emitted = append $emitted $name }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $name := $aliases }}
+{{- if not (has $name $emitted) }}
+{{- fail (printf "schema %s is an alias that names itself, directly or through another alias, so it cannot be rendered" $name) }}
 {{- end }}
 {{- end }}
 
