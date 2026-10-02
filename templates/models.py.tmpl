@@ -75,6 +75,10 @@ class {{ $name }}(BaseModel):
 {{- if not (regexMatch "^[A-Za-z][A-Za-z0-9_]*$" $safe) }}
 {{- fail (printf "property %q of %s cannot name a Python field, even in snake case; rename it in the specification" $prop $name) }}
 {{- end }}
+{{- /* pydantic keeps `model_` for its own members, and the methods of its
+  first version shadow a field with a warning, so both are spelled apart. */ -}}
+{{- if hasPrefix "model_" $safe }}{{ $safe = printf "field_%s" $safe }}{{ end }}
+{{- if has $safe (list "construct" "copy" "dict" "from_orm" "json" "parse_file" "parse_obj" "parse_raw" "schema" "schema_json" "update_forward_refs" "validate") }}{{ $safe = printf "%s_" $safe }}{{ end }}
 {{- if has $safe $fields }}
 {{- fail (printf "property %q of %s renders the field %s, which another property renders too; rename one of them in the specification" $prop $name $safe) }}
 {{- end }}

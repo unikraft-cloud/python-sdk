@@ -79,6 +79,20 @@
 {{- if not .Schema }}
 {{- fail (printf "%s %s: query parameter %q has no schema, so the templates cannot serialize it" $op.Method $op.Path .Name) }}
 {{- end }}
+{{- /* QueryValue is a scalar or a list of scalars; an object has no style the
+       transport knows. */ -}}
+{{- $qt := .Schema.Value.Type }}
+{{- if $qt.Is "array" }}
+{{- if not .Schema.Value.Items }}
+{{- fail (printf "%s %s: query parameter %q is an array without items, so the templates cannot serialize it" $op.Method $op.Path .Name) }}
+{{- end }}
+{{- $qi := .Schema.Value.Items.Value.Type }}
+{{- if not (or ($qi.Is "string") ($qi.Is "integer") ($qi.Is "number") ($qi.Is "boolean")) }}
+{{- fail (printf "%s %s: query parameter %q is not an array of scalars, so the templates cannot serialize it" $op.Method $op.Path .Name) }}
+{{- end }}
+{{- else if not (or ($qt.Is "string") ($qt.Is "integer") ($qt.Is "number") ($qt.Is "boolean")) }}
+{{- fail (printf "%s %s: query parameter %q is not a scalar or an array of scalars, so the templates cannot serialize it" $op.Method $op.Path .Name) }}
+{{- end }}
 {{- if and (.Schema.Value.Type.Is "array") (not (.SerializationMethod).Explode) }}{{ $csv = true }}{{ end }}
 {{- end }}
 {{- end }}
@@ -164,6 +178,11 @@ class {{ pascalcase $tag }}Api(ApiClient):
 {{- if or (eq $media "application/json") (eq $media "text/event-stream") -}}
 {{- if not $content.Schema -}}
 {{- fail (printf "%s %s: the %s response is %s without a schema, so the templates have no model to parse it into" $.Method $.Path $entry.Code $media) -}}
+{{- end -}}
+{{- with $content.Schema.Value -}}
+{{- if or .Enum (and (or .OneOf .AnyOf) (not .Properties)) -}}
+{{- fail (printf "%s %s: the %s response is a union or an enumeration, which is no type the transport decodes into; wrap it in an object" $.Method $.Path $entry.Code) -}}
+{{- end -}}
 {{- end -}}
 {{- $kinds = append $kinds $media -}}
 {{- $rets = append $rets (qualifyModels "models" (pyTypeRef $content.Schema)) -}}
