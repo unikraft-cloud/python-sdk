@@ -16,6 +16,11 @@
 {{- $names := list -}}
 {{- $reserved := list "aclose" "http" "request" "request_bytes" "request_no_content" "stream" "stream_bytes" -}}
 {{- range $tag := uniqueTags $ops -}}
+{{- /* The tag goes verbatim into a class docstring, where a quote or a
+       backslash can break the module. */ -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9 ._-]*$" $tag) -}}
+{{- fail (printf "tag %q has a character the templates cannot render; use letters, digits, spaces, dots, dashes and underscores in the specification" $tag) -}}
+{{- end -}}
 {{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" (snakecase $tag)) -}}
 {{- fail (printf "tag %q cannot name a Python module; rename it in the specification" $tag) -}}
 {{- end -}}
