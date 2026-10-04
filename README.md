@@ -473,8 +473,9 @@ async with PlatformApi(config) as api:
 ## Development
 
 The `api/platform` and `api/controlplane` packages are generated from the OpenAPI
-specification by [`openapi-gen`](https://github.com/unikraft-cloud) using the templates in
-[`templates/`](templates). The sandbox plugin's plumbing is generated elsewhere, by
+specification by `openapi-gen`, pinned in the Makefile, using the templates in
+[`templates/`](templates). The sandbox plugin's plumbing
+is generated elsewhere, by
 [plugin-sdk](https://github.com/unikraft-cloud/plugin-sdk) from the plugin's own
 specification, and installed as the `unikraft-cloud-plugin-sandbox-api` package.
 Everything else is hand-written. Files ending in `_gen.py` are never edited by hand.

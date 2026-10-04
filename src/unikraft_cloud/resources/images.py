@@ -33,7 +33,7 @@ _KEY = "images"
 _DEFAULT_NAMESPACE = "official"
 #: A digest is ``<algorithm>:<hex>``, as the OCI specification spells it.
 _DIGEST = re.compile(r"^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[0-9a-f]+$", re.IGNORECASE)
-#: A tag is a word, as the OCI specification spells it; an empty one is none.
+#: A tag is a word, as the OCI specification spells it; an empty one is refused.
 _TAG = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 
 

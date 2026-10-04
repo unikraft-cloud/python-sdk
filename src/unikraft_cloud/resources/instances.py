@@ -71,7 +71,6 @@ __all__ = [
 #: What a handle resolves to, which is not always a single model: `history`
 #: resolves to a list of them.
 T = TypeVar("T")
-#: A tagged model an operation reports.
 #: What a chained operation resolves to, model or list of them.
 V = TypeVar("V")
 
@@ -601,7 +600,8 @@ class InstanceHandle(ResourceHandle[T]):
         """Block until the instance reaches a state, and report what the API observed.
 
         The API fails the request if its own timeout elapses first, so this raises
-        rather than returning.
+        rather than returning. The read timeout is stretched to outlast the wait
+        only when no ``timeout`` was given, here or to the handle.
         """
         opts = self._options(headers, base_url, timeout)
         if "timeout" not in opts:

@@ -131,10 +131,10 @@ class UnikraftCloud(Scope):
 
         :param token: Bearer token. Falls back to the ``UKC_TOKEN`` environment
             variable.
-        :param metro: Pin to a single metro (``"fra"``), or to a full
-            ``http(s)://`` base URL for a staging or self-hosted deployment (used
-            verbatim). Falls back to ``UKC_METRO``. When omitted, operations cover
-            **every** metro the account can reach.
+        :param metro: The metro operations default to (``"fra"``), or a full
+            ``http(s)://`` base URL for a staging or self-hosted deployment, which
+            pins the client to that endpoint. Falls back to ``UKC_METRO``. When
+            omitted, operations cover **every** metro the account can reach.
         :param metros: The metros operations cover by default: ``"all"``, one
             metro, or a list. Takes precedence over `metro`, which then only
             remains the target for operations that must pick a single metro.
