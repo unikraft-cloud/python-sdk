@@ -11,6 +11,7 @@ import asyncio
 import base64
 import io
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -606,6 +607,113 @@ class TestForgetting:
         assert all(c.method != "DELETE" for c in fake.recorder.calls)
 
 
+class TestFileTransfers:
+    async def test_a_large_write_goes_in_appended_pieces(self) -> None:
+        fake = FakeSandbox()
+        data = bytes(range(10))
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).fs.write("/app/blob", data, chunk_size=4)
+        assert fake.files["/app/blob"] == data
+        bodies = [body_of(fake, i) for i in range(3)]
+        assert [len(base64.b64decode(b["data"])) for b in bodies] == [4, 4, 2]
+        assert [b["append"] for b in bodies] == [False, True, True]
+
+    async def test_a_large_text_travels_as_base64_pieces(self) -> None:
+        fake = FakeSandbox()
+        text = "héllo wörld"
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).fs.write("/app/note", text, chunk_size=4)
+        assert fake.files["/app/note"] == text.encode()
+        assert all(body_of(fake, i)["encoding"] == "base64" for i in range(4))
+
+    async def test_an_appended_large_write_appends_from_the_start(self) -> None:
+        fake = FakeSandbox()
+        fake.files["/app/log"] = b"old"
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).fs.write("/app/log", b"12345678", append=True, chunk_size=4)
+        assert fake.files["/app/log"] == b"old12345678"
+
+    async def test_parents_are_made_before_the_write(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            fs = sandbox(ukc).fs
+            await fs.write("/deep/path/f", b"1", parents=True)
+            await fs.write("top", b"2", parents=True)
+        assert fake.dirs == [("/deep/path", True)]
+        assert fake.plugin_paths() == ["/fs/mkdir", "/fs/write", "/fs/write"]
+
+    async def test_upload_file_streams_a_local_file_in_pieces(self, tmp_path: Path) -> None:
+        source = tmp_path / "blob.bin"
+        data = bytes(range(256)) * 3
+        source.write_bytes(data)
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            landed = await sandbox(ukc).fs.upload_file(source, "/app/blob.bin", chunk_size=256)
+        assert landed == "/app/blob.bin"
+        assert fake.files["/app/blob.bin"] == data
+        assert [body_of(fake, i)["append"] for i in range(3)] == [False, True, True]
+
+    async def test_a_large_upload_goes_in_pieces_to_where_a_small_one_lands(self) -> None:
+        fake = FakeSandbox()
+        fake.dirs.append(("/dir", False))
+        async with cloud(fake) as ukc:
+            sb = sandbox(ukc)
+            big = b"abcdefghij"
+            assert await sb.fs.upload("/dir/", "big.bin", big, chunk_size=4) == "/dir/big.bin"
+            # The first piece is what the plugin refuses; the pieces then go inside.
+            assert await sb.fs.upload("/dir", "also.bin", big, chunk_size=4) == "/dir/also.bin"
+            landed = await sb.fs.upload("/deep/exact.bin", "x", big, chunk_size=4, parents=True)
+            assert landed == "/deep/exact.bin"
+        assert fake.files["/dir/big.bin"] == fake.files["/dir/also.bin"] == big
+        assert fake.files["/deep/exact.bin"] == big
+        ops = [c.url.path.rsplit("/", 1)[1] for c in fake.recorder.calls if "/fs/" in c.url.path]
+        assert ops == ["write"] * 3 + ["write"] * 4 + ["mkdir"] + ["write"] * 3
+        assert ("/deep", True) in fake.dirs
+
+    async def test_upload_file_keeps_the_name_inside_a_directory(self, tmp_path: Path) -> None:
+        source = tmp_path / "a.txt"
+        source.write_bytes(b"")
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            landed = await sandbox(ukc).fs.upload_file(source, "/app/in/", parents=True)
+        assert landed == "/app/in/a.txt"
+        assert fake.files["/app/in/a.txt"] == b""
+        assert fake.dirs == [("/app/in", True)]
+
+    async def test_a_file_streams_out_and_can_be_copied_to_disk(self, tmp_path: Path) -> None:
+        fake = FakeSandbox()
+        fake.files["/app/big"] = b"0123456789"
+        target = tmp_path / "out" / "big"
+        target.parent.mkdir()
+        async with cloud(fake) as ukc:
+            fs = sandbox(ukc).fs
+            chunks = [chunk async for chunk in fs.stream("/app/big", chunk_size=4)]
+            size = await fs.read_to("/app/big", target, chunk_size=4)
+        assert chunks == [b"0123", b"4567", b"89"]
+        assert (size, target.read_bytes()) == (10, b"0123456789")
+        assert fake.plugin_paths() == ["/fs/read_raw", "/fs/read_raw"]
+
+    async def test_a_missing_file_fails_before_the_first_chunk(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(NotFoundError):
+                [chunk async for chunk in sandbox(ukc).fs.stream("/nope")]
+
+    async def test_upload_file_lands_inside_a_directory_named_without_its_slash(
+        self, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "blob.bin"
+        source.write_bytes(b"abcdefgh")
+        fake = FakeSandbox()
+        fake.dirs.append(("/app", False))
+        async with cloud(fake) as ukc:
+            landed = await sandbox(ukc).fs.upload_file(source, "/app", chunk_size=4)
+        assert (landed, fake.files["/app/blob.bin"]) == ("/app/blob.bin", b"abcdefgh")
+        ops = [c.url.path.rsplit("/", 1)[1] for c in fake.recorder.calls if "/fs/" in c.url.path]
+        # The first piece is what the plugin refused; the file then went inside whole.
+        assert ops == ["write"] * 3
+
+
 class SlowReads(FakeSandbox):
     """A platform whose instance reads take a moment."""
 
@@ -854,3 +962,90 @@ class TestCommandShapes:
             with pytest.raises(ValueError, match="zero or more"):
                 await command.wait(timeout=-1)
         assert "/commands/c1/wait_timeout" not in fake.plugin_paths()
+
+
+class TestFileEdges:
+    async def test_a_failed_download_leaves_the_local_file_as_it_was(self, tmp_path: Path) -> None:
+        local = tmp_path / "out.bin"
+        local.write_bytes(b"before")
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(NotFoundError):
+                await sandbox(ukc).fs.read_to("/nope", local)
+        assert local.read_bytes() == b"before"
+        assert sorted(tmp_path.iterdir()) == [local]
+
+    async def test_a_download_lands_whole_under_its_own_name(self, tmp_path: Path) -> None:
+        fake = FakeSandbox()
+        fake.files["/f"] = b"payload"
+        async with cloud(fake) as ukc:
+            size = await sandbox(ukc).fs.read_to("/f", tmp_path / "f.bin")
+        assert size == 7
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["f.bin"]
+
+    async def test_the_file_stream_takes_the_route_the_generated_read_takes(self) -> None:
+        fake = FakeSandbox()
+        fake.files["/f"] = b"data"
+        async with cloud(fake) as ukc:
+            sb = sandbox(ukc)
+            assert await sb.fs.read("/f") == b"data"
+            assert b"".join([chunk async for chunk in sb.fs.stream("/f")]) == b"data"
+        reads = [(c.method, c.url.path) for c in fake.recorder.calls if "/fs/" in c.url.path]
+        assert len(reads) == 2 and reads[0] == reads[1]
+
+    async def test_an_upload_of_a_whole_number_of_pieces_sends_no_extra_piece(
+        self, tmp_path: Path
+    ) -> None:
+        local = tmp_path / "even.bin"
+        local.write_bytes(b"abcdefgh")
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).fs.upload_file(local, "/even", chunk_size=4)
+            await sandbox(ukc).fs.write("/empty", b"")
+        writes = [
+            json.loads(c.content) for c in fake.recorder.calls if c.url.path.endswith("/fs/write")
+        ]
+        assert [(w["path"], w["append"]) for w in writes] == [
+            ("/even", False),
+            ("/even", True),
+            ("/empty", False),
+        ]
+        assert (fake.files["/even"], fake.files["/empty"]) == (b"abcdefgh", b"")
+
+    async def test_a_chunk_size_below_one_is_refused(self, tmp_path: Path) -> None:
+        local = tmp_path / "x"
+        local.write_bytes(b"x")
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(ValueError, match="one or more"):
+                await sandbox(ukc).fs.write("/x", b"data", chunk_size=0)
+            with pytest.raises(ValueError, match="one or more"):
+                await sandbox(ukc).fs.upload_file(local, "/x", chunk_size=-1)
+            with pytest.raises(ValueError, match="one or more"):
+                await sandbox(ukc).fs.read_to("/x", local, chunk_size=0)
+            with pytest.raises(ValueError, match="one or more"):
+                async for _ in sandbox(ukc).fs.stream("/x", chunk_size=-1):
+                    pass
+        assert fake.plugin_paths() == []
+
+    async def test_text_that_escapes_past_a_request_goes_as_base64_pieces(self) -> None:
+        fake = FakeSandbox()
+        text = "é" * 600
+        async with cloud(fake) as ukc:
+            # 1200 bytes of UTF-8, but 3600 once JSON escapes each `é` as `\u00e9`.
+            await sandbox(ukc).fs.write("/t", text, chunk_size=1000)
+            await sandbox(ukc).fs.upload("/d/", "t", text, chunk_size=1000)
+            # ASCII text that fits travels as it is, in one request.
+            await sandbox(ukc).fs.write("/a", "plain", chunk_size=1000)
+        writes = [
+            json.loads(c.content) for c in fake.recorder.calls if c.url.path.endswith("/fs/write")
+        ]
+        assert [(w["path"], w["encoding"], w["append"]) for w in writes] == [
+            ("/t", "base64", False),
+            ("/t", "base64", True),
+            ("/d/t", "base64", False),
+            ("/d/t", "base64", True),
+            ("/a", "utf-8", False),
+        ]
+        assert fake.files["/t"] == fake.files["/d/t"] == text.encode()
+        assert fake.files["/a"] == b"plain"

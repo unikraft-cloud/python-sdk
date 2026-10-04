@@ -13,9 +13,11 @@ import asyncio
 import base64
 import contextlib
 import inspect
+import json
+import os
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypeVar
 
 import httpx
@@ -36,6 +38,7 @@ __all__ = [
     "READY_FIRST_INTERVAL",
     "READY_MAX_INTERVAL",
     "STDIN_CHUNK_SIZE",
+    "WRITE_CHUNK_SIZE",
     "Command",
     "CommandLogs",
     "ExecResult",
@@ -62,6 +65,9 @@ POLL_MAX_FAILURES = 3
 LOG_CHUNK_SIZE = 1 << 20
 #: How much standard input one request carries, in bytes.
 STDIN_CHUNK_SIZE = 32 << 10
+#: How many bytes of a file one write request carries, text counted as JSON
+#: escapes it. The plugin reads two mebibytes of body at most; base64 adds a third.
+WRITE_CHUNK_SIZE = 1 << 20
 #: The signal a command is sent when its caller's timeout elapses: SIGINT.
 INTERRUPT_SIGNAL = 2
 #: How long the interrupt itself is given to be delivered.
@@ -793,50 +799,177 @@ class SandboxFiles:
         """The contents of a text file."""
         return (await self.read(path)).decode(encoding)
 
-    async def write(self, path: str, data: bytes | str, *, append: bool = False) -> None:
-        """Write a file, creating it if missing, in one request.
+    async def stream(
+        self, path: str, *, chunk_size: int | None = None
+    ) -> AsyncGenerator[bytes, None]:
+        """The contents of a file as they arrive, for one too large to hold whole.
 
-        ``bytes`` travel base64-encoded and a ``str`` as UTF-8, which are the two
-        encodings the plugin accepts. ``append`` adds to the file instead of
-        replacing it.
+        Leave the loop to stop early; the connection is released when the
+        generator is closed, which ``contextlib.aclosing`` does on the spot.
         """
+        if chunk_size is not None:
+            _check_chunk_size(chunk_size)
+        api = await self._sandbox.api()
+        # The generated `read_raw_file` answers with the payload whole; the SDK
+        # client it sends through can hand the same payload, from the same
+        # route, over as it arrives.
+        chunks = api.client.stream_bytes(
+            method="POST",
+            path="/fs/read_raw",
+            body=models.ReadFileRequest(path=path),
+            chunk_size=chunk_size,
+        )
+        try:
+            async for chunk in chunks:
+                yield chunk
+        finally:
+            await chunks.aclose()
+
+    async def read_to(
+        self, path: str, local: str | os.PathLike[str], *, chunk_size: int | None = None
+    ) -> int:
+        """Copy a file out of the sandbox to a local path and return its size in bytes.
+
+        The file is written as it arrives, so one larger than memory travels
+        too. It is written beside ``local`` and moved into place once whole, so
+        a download that fails leaves whatever was at ``local`` as it was.
+        """
+        if chunk_size is not None:
+            _check_chunk_size(chunk_size)
+        target = Path(local)
+        partial = target.with_name(f".{target.name}.partial")
+        size = 0
+        try:
+            with partial.open("wb") as handle:
+                async with contextlib.aclosing(self.stream(path, chunk_size=chunk_size)) as chunks:
+                    async for chunk in chunks:
+                        await asyncio.to_thread(handle.write, chunk)
+                        size += len(chunk)
+            partial.replace(target)
+        except BaseException:
+            partial.unlink(missing_ok=True)
+            raise
+        return size
+
+    async def write(
+        self,
+        path: str,
+        data: bytes | str,
+        *,
+        append: bool = False,
+        parents: bool = False,
+        chunk_size: int = WRITE_CHUNK_SIZE,
+    ) -> None:
+        """Write a file, creating it if missing.
+
+        ``bytes`` travel base64-encoded, and a ``str`` as UTF-8 when it fits one
+        request, which are the two encodings the plugin accepts. ``append`` adds
+        to the file instead of replacing it, and ``parents`` creates the
+        directories above it first.
+
+        The plugin bounds a request body, so data that does not fit
+        ``chunk_size`` -- bytes by their count, text as JSON escapes it -- goes
+        in that many bytes per request, base64-encoded: the first piece replaces
+        the file, or with ``append`` adds to it, and the rest are appended to it.
+        """
+        _check_chunk_size(chunk_size)
+        if parents:
+            await self._make_parents(path)
+        if _fits(data, chunk_size):
+            await self._write(path, data, append=append)
+            return
+        payload = data.encode() if isinstance(data, str) else data
+        for start in range(0, len(payload), chunk_size):
+            piece = payload[start : start + chunk_size]
+            await self._write(path, piece, append=append or start > 0)
+
+    async def upload_file(
+        self,
+        local: str | os.PathLike[str],
+        path: str,
+        *,
+        parents: bool = False,
+        chunk_size: int = WRITE_CHUNK_SIZE,
+    ) -> str:
+        """Copy a local file into the sandbox and return the path it landed at.
+
+        A ``path`` ending in ``/`` names a directory, and so does one the plugin
+        reports to be one; the file keeps its name inside it. The file is read
+        and sent ``chunk_size`` bytes at a time, so one larger than memory
+        travels too. ``parents`` creates the directories above the target first.
+        """
+        _check_chunk_size(chunk_size)
+        source = Path(local)
+        target = f"{path}{source.name}" if path.endswith("/") else path
+        if parents:
+            await self._make_parents(target)
+        try:
+            await self._send_file(source, target, chunk_size)
+        except UnikraftCloudError as err:
+            if target != path or not _is_a_directory(err):
+                raise
+            # The path names a directory without its trailing slash.
+            target = f"{path}/{source.name}"
+            await self._send_file(source, target, chunk_size)
+        return target
+
+    async def _send_file(self, source: Path, target: str, chunk_size: int) -> None:
+        """Send a local file in pieces: the first replaces the target, the rest append."""
+        with source.open("rb") as handle:
+            written = False
+            while True:
+                piece = await asyncio.to_thread(handle.read, chunk_size)
+                if not piece and written:
+                    break
+                await self._write(target, piece, append=written)
+                written = True
+                if len(piece) < chunk_size:
+                    break
+
+    async def _write(self, path: str, data: bytes | str, *, append: bool) -> None:
+        """One write request, with the data encoded the way the plugin takes it."""
         encoding, payload = _encode(data)
         api = await self._sandbox.api()
         await api.fs.write_file(
             body=models.WriteFileRequest(path=path, append=append, encoding=encoding, data=payload)
         )
 
+    async def _make_parents(self, path: str) -> None:
+        """Create the directories above ``path``."""
+        parent = str(PurePosixPath(path).parent)
+        if parent not in (".", "/"):
+            await self.mkdir(parent, parents=True)
+
     async def upload(
-        self, path: str, filename: str, data: bytes | str, *, parents: bool = False
+        self,
+        path: str,
+        filename: str,
+        data: bytes | str,
+        *,
+        parents: bool = False,
+        chunk_size: int = WRITE_CHUNK_SIZE,
     ) -> str:
         """Write a file at ``path``, or at ``path/filename`` when ``path`` is a directory.
 
         A ``path`` ending in ``/`` names a directory, and so does one the plugin
         reports to be one, in which case the file goes inside it under
         ``filename``; the path the file landed at is returned. ``parents``
-        creates the directories above it first, and a file that is there is
-        replaced, as the CLI's upload has it.
+        creates the directories above it first, and the data travels as
+        :meth:`write` sends it, which replaces a file that is there.
         """
+        _check_chunk_size(chunk_size)
         if not filename or "/" in filename:
             raise ValueError("`filename` is one path segment: the file's name inside a directory.")
         target = f"{path}{filename}" if path.endswith("/") else path
-        if parents:
-            await self._make_parents(target)
         try:
-            await self.write(target, data)
+            await self.write(target, data, parents=parents, chunk_size=chunk_size)
         except UnikraftCloudError as err:
             if target != path or not _is_a_directory(err):
                 raise
             # The path names a directory without its trailing slash.
             target = f"{path}/{filename}"
-            await self.write(target, data)
+            await self.write(target, data, parents=parents, chunk_size=chunk_size)
         return target
-
-    async def _make_parents(self, path: str) -> None:
-        """Create the directories above ``path``."""
-        parent = str(PurePosixPath(path).parent)
-        if parent not in (".", "/"):
-            await self.mkdir(parent, parents=True)
 
 
 def _permanent(err: UnikraftCloudError) -> bool:
@@ -852,6 +985,18 @@ def _permanent(err: UnikraftCloudError) -> bool:
 def _is_a_directory(err: UnikraftCloudError) -> bool:
     """Whether a write failed because its path is a directory, as the plugin reports it."""
     return err.status == 500 and "is a directory" in str(err).lower()
+
+
+def _check_chunk_size(chunk_size: int) -> None:
+    if chunk_size <= 0:
+        raise ValueError("`chunk_size` is a number of bytes per request, one or more.")
+
+
+def _fits(data: bytes | str, chunk_size: int) -> bool:
+    """Whether the data goes in one request: bytes by their count, text as JSON escapes it."""
+    if isinstance(data, str):
+        return len(json.dumps(data)) <= chunk_size
+    return len(data) <= chunk_size
 
 
 def _encode(data: bytes | str) -> tuple[models.FileEncoding, str]:

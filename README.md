@@ -323,6 +323,7 @@ async with PlatformApi(config) as api:
 
 - [`examples/quickstart.py`](examples/quickstart.py) — create, wait, read logs, list, suspend, delete
 - [`examples/update.py`](examples/update.py) — patch objects and the staged editor
+- [`examples/sandbox.py`](examples/sandbox.py) — run commands and move files through the sandbox plugin
 - [`examples/plumbing.py`](examples/plumbing.py) — the raw API on its own
 
 ## Development
