@@ -27,7 +27,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.AttachVolumesResponse:
         """Attach Volume by UUID"""
-        return await self._request(
+        return await self.request(
             models.AttachVolumesResponse,
             method="PUT",
             path=f"/v1/volumes/{quote(uuid, safe='')}/attach",
@@ -46,7 +46,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.AttachVolumesResponse:
         """Attach Volumes"""
-        return await self._request(
+        return await self.request(
             models.AttachVolumesResponse,
             method="PUT",
             path="/v1/volumes/attach",
@@ -66,7 +66,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.CloneVolumesResponse:
         """Clone Volume by UUID"""
-        return await self._request(
+        return await self.request(
             models.CloneVolumesResponse,
             method="POST",
             path=f"/v1/volumes/{quote(uuid, safe='')}/clone",
@@ -85,7 +85,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.CloneVolumesResponse:
         """Clone Volumes"""
-        return await self._request(
+        return await self.request(
             models.CloneVolumesResponse,
             method="POST",
             path="/v1/volumes/clone",
@@ -104,7 +104,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.CreateTemplateVolumesResponse:
         """Create template volume"""
-        return await self._request(
+        return await self.request(
             models.CreateTemplateVolumesResponse,
             method="POST",
             path="/v1/volumes/templates",
@@ -123,7 +123,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.CreateVolumeResponse:
         """Create Volume"""
-        return await self._request(
+        return await self.request(
             models.CreateVolumeResponse,
             method="POST",
             path="/v1/volumes",
@@ -142,7 +142,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteTemplateVolumesResponse:
         """Delete template volume by UUID"""
-        return await self._request(
+        return await self.request(
             models.DeleteTemplateVolumesResponse,
             method="DELETE",
             path=f"/v1/volumes/templates/{quote(uuid, safe='')}",
@@ -160,7 +160,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteTemplateVolumesResponse:
         """Delete template volumes"""
-        return await self._request(
+        return await self.request(
             models.DeleteTemplateVolumesResponse,
             method="DELETE",
             path="/v1/volumes/templates",
@@ -179,7 +179,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteVolumesResponse:
         """Delete Volume by UUID"""
-        return await self._request(
+        return await self.request(
             models.DeleteVolumesResponse,
             method="DELETE",
             path=f"/v1/volumes/{quote(uuid, safe='')}",
@@ -197,7 +197,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteVolumesResponse:
         """Delete Volumes"""
-        return await self._request(
+        return await self.request(
             models.DeleteVolumesResponse,
             method="DELETE",
             path="/v1/volumes",
@@ -217,7 +217,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DetachVolumesResponse:
         """Detach Volume by UUID"""
-        return await self._request(
+        return await self.request(
             models.DetachVolumesResponse,
             method="PUT",
             path=f"/v1/volumes/{quote(uuid, safe='')}/detach",
@@ -236,7 +236,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DetachVolumesResponse:
         """Detach Volumes"""
-        return await self._request(
+        return await self.request(
             models.DetachVolumesResponse,
             method="PUT",
             path="/v1/volumes/detach",
@@ -256,7 +256,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetTemplateVolumesResponse:
         """Get template volume by UUID"""
-        return await self._request(
+        return await self.request(
             models.GetTemplateVolumesResponse,
             method="GET",
             path=f"/v1/volumes/templates/{quote(uuid, safe='')}",
@@ -284,7 +284,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetTemplateVolumesResponse:
         """List template volumes"""
-        return await self._request(
+        return await self.request(
             models.GetTemplateVolumesResponse,
             method="GET",
             path="/v1/volumes/templates",
@@ -313,7 +313,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetVolumesResponse:
         """Get Volume by UUID"""
-        return await self._request(
+        return await self.request(
             models.GetVolumesResponse,
             method="GET",
             path=f"/v1/volumes/{quote(uuid, safe='')}",
@@ -341,7 +341,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetVolumesResponse:
         """List Volumes"""
-        return await self._request(
+        return await self.request(
             models.GetVolumesResponse,
             method="GET",
             path="/v1/volumes",
@@ -370,7 +370,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateTemplateVolumesResponse:
         """Update template volume by UUID"""
-        return await self._request(
+        return await self.request(
             models.UpdateTemplateVolumesResponse,
             method="PATCH",
             path=f"/v1/volumes/templates/{quote(uuid, safe='')}",
@@ -389,7 +389,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateTemplateVolumesResponse:
         """Update template volumes"""
-        return await self._request(
+        return await self.request(
             models.UpdateTemplateVolumesResponse,
             method="PATCH",
             path="/v1/volumes/templates",
@@ -409,7 +409,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateVolumesResponse:
         """Update Volume by UUID"""
-        return await self._request(
+        return await self.request(
             models.UpdateVolumesResponse,
             method="PATCH",
             path=f"/v1/volumes/{quote(uuid, safe='')}",
@@ -428,7 +428,7 @@ class VolumesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateVolumesResponse:
         """Update Volumes"""
-        return await self._request(
+        return await self.request(
             models.UpdateVolumesResponse,
             method="PATCH",
             path="/v1/volumes",

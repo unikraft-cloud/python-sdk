@@ -24,7 +24,7 @@ class MetrosApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.ListMetroResponse:
         """Get Metros"""
-        return await self._request(
+        return await self.request(
             models.ListMetroResponse,
             method="GET",
             path="/v1/metros",

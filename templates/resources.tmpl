@@ -183,7 +183,7 @@ class {{ pascalcase $tag }}Api(ApiClient):
             request_headers["{{ .Name }}"] = {{ pySafeName (snakecase .Name) }}
         {{- end }}
 {{- end }}
-        return {{ if not $sse }}await {{ end }}self.{{ if $sse }}_stream{{ else if $raw }}_request_bytes{{ else if eq $ret "" }}_request_no_content{{ else }}_request{{ end }}(
+        return {{ if not $sse }}await {{ end }}self.{{ if $sse }}stream{{ else if $raw }}request_bytes{{ else if eq $ret "" }}request_no_content{{ else }}request{{ end }}(
             {{ if or $sse (ne $ret "") }}{{ $ret }},
             {{ end }}method="{{ .Method }}",
             {{ if pathParameters . }}path=f"{{ $path }}"{{ else }}path="{{ $path }}"{{ end }},

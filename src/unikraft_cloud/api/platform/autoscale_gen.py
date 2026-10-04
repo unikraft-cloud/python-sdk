@@ -27,7 +27,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.CreateAutoscaleConfigurationsResponse:
         """Create Autoscale Configuration by Service Group UUID"""
-        return await self._request(
+        return await self.request(
             models.CreateAutoscaleConfigurationsResponse,
             method="POST",
             path=f"/v1/services/{quote(uuid, safe='')}/autoscale",
@@ -47,7 +47,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.CreateAutoscaleConfigurationPolicyResponse:
         """Create Autoscale Configuration Policy"""
-        return await self._request(
+        return await self.request(
             models.CreateAutoscaleConfigurationPolicyResponse,
             method="POST",
             path=f"/v1/services/{quote(uuid, safe='')}/autoscale/policies",
@@ -66,7 +66,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.CreateAutoscaleConfigurationsResponse:
         """Create Autoscale Configurations"""
-        return await self._request(
+        return await self.request(
             models.CreateAutoscaleConfigurationsResponse,
             method="POST",
             path="/v1/services/autoscale",
@@ -86,7 +86,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteAutoscaleConfigurationPolicyResponse:
         """Delete Autoscale Configuration Policies"""
-        return await self._request(
+        return await self.request(
             models.DeleteAutoscaleConfigurationPolicyResponse,
             method="DELETE",
             path=f"/v1/services/{quote(uuid, safe='')}/autoscale/policies",
@@ -106,7 +106,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteAutoscaleConfigurationPolicyResponse:
         """Delete Autoscale Configuration Policy by Name"""
-        return await self._request(
+        return await self.request(
             models.DeleteAutoscaleConfigurationPolicyResponse,
             method="DELETE",
             path=f"/v1/services/{quote(uuid, safe='')}/autoscale/policies/{quote(name, safe='')}",
@@ -124,7 +124,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteAutoscaleConfigurationsResponse:
         """Delete Autoscale Configurations"""
-        return await self._request(
+        return await self.request(
             models.DeleteAutoscaleConfigurationsResponse,
             method="DELETE",
             path="/v1/services/autoscale",
@@ -143,7 +143,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteAutoscaleConfigurationsResponse:
         """Delete Autoscale Configurations by Service Group UUID"""
-        return await self._request(
+        return await self.request(
             models.DeleteAutoscaleConfigurationsResponse,
             method="DELETE",
             path=f"/v1/services/{quote(uuid, safe='')}/autoscale",
@@ -162,7 +162,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetAutoscaleConfigurationPolicyResponse:
         """List Autoscale Configuration Policies"""
-        return await self._request(
+        return await self.request(
             models.GetAutoscaleConfigurationPolicyResponse,
             method="GET",
             path=f"/v1/services/{quote(uuid, safe='')}/autoscale/policies",
@@ -182,7 +182,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetAutoscaleConfigurationPolicyResponse:
         """Get Autoscale Configuration Policy by Name"""
-        return await self._request(
+        return await self.request(
             models.GetAutoscaleConfigurationPolicyResponse,
             method="GET",
             path=f"/v1/services/{quote(uuid, safe='')}/autoscale/policies/{quote(name, safe='')}",
@@ -201,7 +201,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetAutoscaleConfigurationsResponse:
         """List Autoscale Configurations"""
-        return await self._request(
+        return await self.request(
             models.GetAutoscaleConfigurationsResponse,
             method="GET",
             path="/v1/services/autoscale",
@@ -223,7 +223,7 @@ class AutoscaleApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetAutoscaleConfigurationsResponse:
         """Get Autoscale Configurations by Service Group UUID"""
-        return await self._request(
+        return await self.request(
             models.GetAutoscaleConfigurationsResponse,
             method="GET",
             path=f"/v1/services/{quote(uuid, safe='')}/autoscale",

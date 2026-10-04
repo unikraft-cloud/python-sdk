@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from types import TracebackType
 from typing import Any, TypeVar
@@ -374,6 +374,11 @@ class ApiClient(_PoolOwner):
     Performs authenticated requests and returns the parsed response envelope.
     Raises :class:`UnikraftCloudError` on network failures and non-2xx HTTP
     responses.
+
+    The transport is public: :meth:`request`, :meth:`request_no_content`,
+    :meth:`request_bytes`, :meth:`stream_bytes` and :meth:`stream` carry a
+    request whose shape a generated client describes, so a client generated
+    outside this package can send through it too.
     """
 
     def __init__(self, config: ApiClientConfig) -> None:
@@ -383,6 +388,11 @@ class ApiClient(_PoolOwner):
         self._default_headers = _lower_keys(config.headers or {})
         if config.user_agent:
             self._default_headers["user-agent"] = config.user_agent
+
+    @property
+    def config(self) -> ApiClientConfig:
+        """The configuration this client sends with: endpoint, token, timeout, pool."""
+        return self._config
 
     def _build_request(
         self,
@@ -444,7 +454,7 @@ class ApiClient(_PoolOwner):
             kind="network",
         )
 
-    async def _request(
+    async def request(
         self,
         model: type[T],
         *,
@@ -480,7 +490,7 @@ class ApiClient(_PoolOwner):
                 body=parsed,
             ) from cause
 
-    async def _request_no_content(
+    async def request_no_content(
         self,
         *,
         method: str,
@@ -505,7 +515,7 @@ class ApiClient(_PoolOwner):
         response = await self._send(request, stream=False)
         self._raise_for_status(response, self._parse_json(response, request.url))
 
-    async def _request_bytes(
+    async def request_bytes(
         self,
         *,
         method: str,
@@ -539,7 +549,7 @@ class ApiClient(_PoolOwner):
             content=response.content, status=response.status_code, headers=response.headers
         )
 
-    async def _stream_bytes(
+    async def stream_bytes(
         self,
         *,
         method: str,
@@ -550,13 +560,13 @@ class ApiClient(_PoolOwner):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
         chunk_size: int | None = None,
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes, None]:
         """Yield a raw byte payload as it arrives, without holding it all in memory.
 
         The iterator ends when the server closes the body. Close it to stop early
         and release the connection at once, with ``contextlib.aclosing`` or its
         ``aclose()``; a ``break`` alone leaves that to garbage collection. A failure
-        is raised before the first chunk, exactly as :meth:`_request_bytes` raises it.
+        is raised before the first chunk, exactly as :meth:`request_bytes` raises it.
         """
         request = self._build_request(
             method=method,
@@ -584,7 +594,7 @@ class ApiClient(_PoolOwner):
             # dangling mid-stream.
             await response.aclose()
 
-    async def _stream(
+    async def stream(
         self,
         model: type[T],
         *,
@@ -595,11 +605,12 @@ class ApiClient(_PoolOwner):
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
-    ) -> AsyncIterator[T]:
+    ) -> AsyncGenerator[T, None]:
         """Yield each event of a ``text/event-stream`` response, parsed as `model`.
 
-        The iterator ends when the server closes the stream; ``break`` out of the
-        loop to stop early and release the connection.
+        The iterator ends when the server closes the stream. Close it to stop
+        early and release the connection at once, with ``contextlib.aclosing``
+        or its ``aclose()``; a ``break`` alone leaves that to garbage collection.
         """
         request = self._build_request(
             method=method,

@@ -29,7 +29,7 @@ class NodeActivationServiceApi(ApiClient):
         activation, a secret must be provided. For renewal, the CSR self-signature
         is used as proof of key possession and the secret is omitted.
         """
-        return await self._request(
+        return await self.request(
             models.NodeActivateResponse,
             method="POST",
             path="/v1/nodes/activate",

@@ -53,22 +53,22 @@ class Client(ApiClient):
     """A stand-in for a generated client, exercising the transport directly."""
 
     async def read(self, **kwargs: Any) -> Env:
-        return await self._request(Env, method="GET", path="/v1/things", **kwargs)
+        return await self.request(Env, method="GET", path="/v1/things", **kwargs)
 
     async def write(self, body: Any) -> Env:
-        return await self._request(Env, method="POST", path="/v1/things", body=body)
+        return await self.request(Env, method="POST", path="/v1/things", body=body)
 
     async def discard(self) -> None:
-        return await self._request_no_content(method="DELETE", path="/v1/things")
+        return await self.request_no_content(method="DELETE", path="/v1/things")
 
     def events(self) -> Any:
-        return self._stream(dict, method="GET", path="/v1/events")
+        return self.stream(dict, method="GET", path="/v1/events")
 
     async def download(self, **kwargs: Any) -> RawResponse:
-        return await self._request_bytes(method="GET", path="/v1/blob", **kwargs)
+        return await self.request_bytes(method="GET", path="/v1/blob", **kwargs)
 
     def chunks(self, **kwargs: Any) -> Any:
-        return self._stream_bytes(method="GET", path="/v1/blob", **kwargs)
+        return self.stream_bytes(method="GET", path="/v1/blob", **kwargs)
 
 
 def client(recorder: Recorder, **config: Any) -> Client:

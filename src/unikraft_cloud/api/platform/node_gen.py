@@ -24,7 +24,7 @@ class NodeApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.HealthzResponse:
         """Health Check"""
-        return await self._request(
+        return await self.request(
             models.HealthzResponse,
             method="GET",
             path="/v1/healthz",

@@ -26,7 +26,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.CreateServiceGroupResponse:
         """Create Service Group"""
-        return await self._request(
+        return await self.request(
             models.CreateServiceGroupResponse,
             method="POST",
             path="/v1/services",
@@ -45,7 +45,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteServiceGroupsResponse:
         """Delete Service Group by UUID"""
-        return await self._request(
+        return await self.request(
             models.DeleteServiceGroupsResponse,
             method="DELETE",
             path=f"/v1/services/{quote(uuid, safe='')}",
@@ -63,7 +63,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteServiceGroupsResponse:
         """Delete Service Groups"""
-        return await self._request(
+        return await self.request(
             models.DeleteServiceGroupsResponse,
             method="DELETE",
             path="/v1/services",
@@ -83,7 +83,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetServiceGroupsResponse:
         """Get Service Group by UUID"""
-        return await self._request(
+        return await self.request(
             models.GetServiceGroupsResponse,
             method="GET",
             path=f"/v1/services/{quote(uuid, safe='')}",
@@ -110,7 +110,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetServiceGroupsResponse:
         """List Service Groups"""
-        return await self._request(
+        return await self.request(
             models.GetServiceGroupsResponse,
             method="GET",
             path="/v1/services",
@@ -138,7 +138,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateServiceGroupsResponse:
         """Update Service Group by UUID"""
-        return await self._request(
+        return await self.request(
             models.UpdateServiceGroupsResponse,
             method="PATCH",
             path=f"/v1/services/{quote(uuid, safe='')}",
@@ -157,7 +157,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateServiceGroupsResponse:
         """Update Service Groups"""
-        return await self._request(
+        return await self.request(
             models.UpdateServiceGroupsResponse,
             method="PATCH",
             path="/v1/services",

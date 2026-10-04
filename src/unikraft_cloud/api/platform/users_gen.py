@@ -26,7 +26,7 @@ class UsersApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.AddUsersResponse:
         """Add Users"""
-        return await self._request(
+        return await self.request(
             models.AddUsersResponse,
             method="POST",
             path="/v1/users",
@@ -44,7 +44,7 @@ class UsersApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.QuotasResponse:
         """Get Current User Quotas"""
-        return await self._request(
+        return await self.request(
             models.QuotasResponse,
             method="GET",
             path="/v1/users/quotas",
@@ -62,7 +62,7 @@ class UsersApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.QuotasResponse:
         """Get User Quotas by UUID"""
-        return await self._request(
+        return await self.request(
             models.QuotasResponse,
             method="GET",
             path=f"/v1/users/{quote(uuid, safe='')}/quotas",

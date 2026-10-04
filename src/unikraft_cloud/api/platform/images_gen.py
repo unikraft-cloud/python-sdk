@@ -27,7 +27,7 @@ class ImagesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetImagesResponse:
         """Get Images in Store"""
-        return await self._request(
+        return await self.request(
             models.GetImagesResponse,
             method="GET",
             path="/v1/image-store",
@@ -52,7 +52,7 @@ class ImagesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetImagesResponse:
         """Get Images"""
-        return await self._request(
+        return await self.request(
             models.GetImagesResponse,
             method="GET",
             path="/v1/images",

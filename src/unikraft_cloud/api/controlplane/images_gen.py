@@ -26,7 +26,7 @@ class ImagesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.ListImagesResponse:
         """List Images"""
-        return await self._request(
+        return await self.request(
             models.ListImagesResponse,
             method="GET",
             path="/v1/images",
