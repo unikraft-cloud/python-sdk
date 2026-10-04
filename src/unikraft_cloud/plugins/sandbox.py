@@ -2,10 +2,10 @@
 # Copyright (c) 2026, Unikraft GmbH. All rights reserved.
 #
 # The sandbox plugin: shell commands and files inside an instance, over the
-# plugin's HTTP API. A command is started; while an unbounded wait for it
-# runs alongside, its output is polled, quickly while output arrives and
-# backing off while it does not; and a timeout interrupts the command and
-# then waits for it to end.
+# plugin's HTTP API. A command is started; while a wait for its end runs
+# alongside, its output is polled, quickly while output arrives and backing
+# off while it does not; and a timeout interrupts the command and then
+# waits for it to end.
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequen
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypeVar
+from urllib.parse import quote
 
 import httpx
 
@@ -38,6 +39,7 @@ __all__ = [
     "READY_FIRST_INTERVAL",
     "READY_MAX_INTERVAL",
     "STDIN_CHUNK_SIZE",
+    "WAIT_SLICE",
     "WRITE_CHUNK_SIZE",
     "Command",
     "CommandLogs",
@@ -68,6 +70,11 @@ STDIN_CHUNK_SIZE = 32 << 10
 #: How many bytes of a file one write request carries, text counted as JSON
 #: escapes it. The plugin reads two mebibytes of body at most; base64 adds a third.
 WRITE_CHUNK_SIZE = 1 << 20
+#: The longest one wait for a command's end, in seconds. The metro proxy ends
+#: a plugin request after 60s, so a longer wait is sent as several of these.
+WAIT_SLICE = 30.0
+#: The extra read time that a wait request gets beyond its wait, in seconds.
+_WAIT_MARGIN = 10.0
 #: The signal a command is sent when its caller's timeout elapses: SIGINT.
 INTERRUPT_SIGNAL = 2
 #: How long the interrupt itself is given to be delivered.
@@ -407,18 +414,61 @@ class Command:
         """
         _check_following(timeout, None)
         api = await self.sandbox.api()
-        if timeout is None:
-            await api.commands.wait_for_command(self.uuid)
-        else:
+        if not await self._wait_for_end(api, timeout):
+            return None
+        return await self._exit_code()
+
+    async def _wait_for_end(self, api: SandboxApi, timeout: float | None = None) -> bool:
+        """Wait up to ``timeout`` for the command to end, in waits of at most
+        :data:`WAIT_SLICE`; return ``False`` if it still runs at the timeout.
+
+        A wait that fails for any reason but the command still running is
+        retried with backoff, up to :data:`POLL_MAX_FAILURES` times in a row,
+        as a poll of the output is: one hiccup of the proxy in a long wait must
+        not lose the command. A plugin that answers before the slice is up is
+        asked again after a pause, not at once.
+        """
+        loop = asyncio.get_running_loop()
+        left = timeout
+        deadline = None if timeout is None else loop.time() + timeout
+        failures = 0
+        interval = POLL_INTERVAL
+        while True:
+            slice_s = WAIT_SLICE if left is None else min(WAIT_SLICE, left)
+            started = loop.time()
             try:
-                await api.commands.wait_for_command_with_timeout(
-                    self.uuid, body=models.CommandWaitTimeoutRequest(timeout_s=timeout)
+                # The read timeout must outlast the slice that the plugin holds the
+                # request for; the generated method has one timeout for all phases.
+                await api.client.request(
+                    models.EmptyResponse,
+                    method="POST",
+                    path=f"/commands/{quote(self.uuid, safe='')}/wait_timeout",
+                    body=models.CommandWaitTimeoutRequest(timeout_s=slice_s),
+                    timeout=_outlasting(api.client.config.timeout, slice_s),
                 )
             except UnikraftCloudError as err:
                 if err.status == 408:
-                    return None
-                raise
-        return await self._exit_code()
+                    failures = 0
+                    # Paced, up to a poll's longest pause, so a plugin that does
+                    # not hold the request is neither hammered nor left unwatched.
+                    early = min(slice_s - (loop.time() - started), POLL_MAX_INTERVAL)
+                    if early > 0:
+                        left = None if deadline is None else max(deadline - loop.time(), 0)
+                        await _sleep(early if left is None else min(early, left))
+                else:
+                    failures += 1
+                    if failures >= POLL_MAX_FAILURES:
+                        raise
+                    # Backed off, but never past the deadline.
+                    left = None if deadline is None else max(deadline - loop.time(), 0)
+                    await _sleep(interval if left is None else min(interval, left))
+                    interval = min(interval * 2, POLL_MAX_INTERVAL)
+                if deadline is not None:
+                    left = deadline - loop.time()
+                    if left <= 0:
+                        return False
+            else:
+                return True
 
     async def logs(
         self,
@@ -462,13 +512,14 @@ class Command:
     async def stream(self) -> AsyncGenerator[OutputChunk, None]:
         """Follow the command's output until it ends.
 
-        An unbounded wait for the command runs alongside the polling, so the
+        A wait for the command's end runs alongside the polling, so the
         stream ends as soon as the command does, with whatever output remained.
         Polling backs off while the command is quiet and speeds back up when
-        it writes; :data:`POLL_MAX_FAILURES` consecutive failed polls raise.
+        it writes; :data:`POLL_MAX_FAILURES` consecutive failed polls raise,
+        and so does a wait that failed as often.
         """
         api = await self.sandbox.api()
-        ended = asyncio.ensure_future(api.commands.wait_for_command(self.uuid))
+        ended = asyncio.ensure_future(self._wait_for_end(api))
         cursor = _OutputCursor()
         interval = POLL_INTERVAL
         failures = 0
@@ -763,6 +814,18 @@ def _check_following(timeout: float | None, wait_delay: float | None) -> None:
         raise TypeError("`wait_delay` is the grace after `timeout` elapses; give a `timeout` too.")
     if wait_delay < 0:
         raise ValueError("`wait_delay` is a number of seconds, zero or more, or None.")
+
+
+def _outlasting(
+    timeout: float | httpx.Timeout | None, seconds: float
+) -> float | httpx.Timeout | None:
+    """A request timeout whose read outlasts a wait of ``seconds`` the plugin holds."""
+    current = timeout if isinstance(timeout, httpx.Timeout) else httpx.Timeout(timeout)
+    if current.read is None or current.read >= seconds + _WAIT_MARGIN:
+        return timeout
+    return httpx.Timeout(
+        connect=current.connect, read=seconds + _WAIT_MARGIN, write=current.write, pool=current.pool
+    )
 
 
 class _OutputCursor:

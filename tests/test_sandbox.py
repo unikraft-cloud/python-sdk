@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gc
 import io
 import json
 from pathlib import Path
@@ -209,7 +210,41 @@ class TestCommands:
             assert await command.wait(timeout=1) == 4
             assert await command.wait() == 4
         assert body_of(fake, 1) == {"timeout_s": 0.01}
-        assert fake.plugin_paths()[-2:] == ["/commands/c1/wait", "/commands/c1"]
+        assert body_of(fake, -2) == {"timeout_s": sandbox_module.WAIT_SLICE}
+        assert fake.plugin_paths()[-2:] == ["/commands/c1/wait_timeout", "/commands/c1"]
+
+    async def test_wait_without_a_timeout_outlasts_the_proxy_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "WAIT_SLICE", 0.01)
+        fake = FakeSandbox()
+        fake.proxy_timeout = 0.05
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("sleep 1000")
+            asyncio.get_running_loop().call_later(0.2, fake.commands["c1"].finish, 4)
+            assert await command.wait() == 4
+        paths = fake.plugin_paths()
+        assert "/commands/c1/wait" not in paths
+        assert paths.count("/commands/c1/wait_timeout") > 1
+
+    async def test_a_long_timeout_is_sent_as_waits_under_the_proxy_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "WAIT_SLICE", 0.01)
+        fake = FakeSandbox()
+        fake.proxy_timeout = 0.05
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("sleep 1000")
+            assert await command.wait(timeout=0.2) is None
+        slices = [
+            json.loads(call.content)["timeout_s"]
+            for call in fake.recorder.calls
+            if call.url.path.endswith("/wait_timeout")
+        ]
+        assert len(slices) > 1
+        assert all(s <= 0.01 for s in slices)
 
     async def test_logs_are_decoded_and_ranged(self) -> None:
         fake = FakeSandbox()
@@ -339,8 +374,21 @@ class TestStreaming:
             chunks = [chunk async for chunk in command.stream()]
         assert b"".join(c.data for c in chunks) == b"hi"
         paths = fake.plugin_paths()
-        assert "/commands/c1/wait" in paths
-        assert "/commands/c1/wait_timeout" not in paths
+        assert "/commands/c1/wait_timeout" in paths
+        assert "/commands/c1/wait" not in paths
+
+    async def test_follows_a_command_that_outlasts_the_proxy_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "WAIT_SLICE", 0.01)
+        fake = FakeSandbox()
+        fake.proxy_timeout = 0.05
+        fake.on_run(stdout=b"done", exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("sleep 1000")
+            asyncio.get_running_loop().call_later(0.2, fake.commands["c1"].finish, 0)
+            chunks = [chunk async for chunk in command.stream()]
+        assert b"".join(c.data for c in chunks) == b"done"
 
     async def test_gives_up_after_three_failed_polls_in_a_row(self) -> None:
         fake = FakeSandbox()
@@ -864,6 +912,155 @@ class TestFailuresThatCannotChange:
                 await sb.ready()
         # One round of lookups per call: nothing was waited out.
         assert len(fake.recorder.metros("/v1/instances")) == 4
+
+
+class Impatient(FakeSandbox):
+    """A plugin that answers a wait at once instead of holding it for its slice."""
+
+    async def _command(
+        self, request: httpx.Request, command: FakeCommand, op: str, body: dict[str, Any]
+    ) -> httpx.Response:
+        if op == "wait_timeout" and command.running:
+            return httpx.Response(408, json={"status": "error", "message": "still running"})
+        return await super()._command(request, command, op, body)
+
+
+class TestWaitHiccups:
+    async def test_a_wait_answered_early_is_paced_to_its_slice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "POLL_MAX_INTERVAL", 10.0)
+        fake = Impatient()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            assert await command.wait(timeout=0.05) is None
+        # Paced, the plugin is asked once or twice in the time, not hundreds of times.
+        assert fake.plugin_paths().count("/commands/c1/wait_timeout") <= 2
+
+    async def test_the_pacing_still_notices_an_end_within_a_poll_pause(self) -> None:
+        fake = Impatient()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            asyncio.get_running_loop().call_later(0.02, fake.commands["c1"].finish, 0)
+            # Paced to a poll's longest pause at most, not to the whole slice.
+            assert await asyncio.wait_for(command.wait(), 2) == 0
+
+    async def test_a_wait_slice_is_given_longer_than_the_clients_read_timeout(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=1)
+        async with UnikraftCloud(
+            token="tok", metro="fra", transport=fake.transport, timeout=5.0
+        ) as ukc:
+            await sandbox(ukc).exec("x")
+        reads = {
+            call.url.path.rsplit("/", 1)[-1]: call.extensions["timeout"]["read"]
+            for call in fake.recorder.calls
+            if call.url.path.startswith(fake.prefix)
+        }
+        # The plugin holds a wait for the whole slice; every other request keeps
+        # the client's own timeout.
+        assert reads["wait_timeout"] == sandbox_module.WAIT_SLICE + sandbox_module._WAIT_MARGIN
+        assert reads["logs"] == 5.0
+
+    async def test_a_backoff_after_a_failed_wait_stops_at_the_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slept: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        monkeypatch.setattr(sandbox_module, "POLL_INTERVAL", 10.0)
+        fake = FakeSandbox()
+        fake.failing_waits = 1
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            assert await command.wait(timeout=0.05) is None
+        assert slept and all(pause <= 0.05 for pause in slept)
+
+    async def test_a_wait_that_fails_once_or_twice_is_retried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = FakeSandbox()
+        fake.failing_waits = 2
+        fake.on_run(stdout=b"out", exits_after_polls=2)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x", forget=True)
+        assert (result.exit_code, result.stdout) == (0, b"out")
+        assert fake.plugin_paths().count("/commands/c1/wait_timeout") >= 3
+        assert "c1" not in fake.commands
+
+    async def test_a_wait_that_keeps_failing_gives_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = FakeSandbox()
+        fake.failing_waits = NEVER
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            with pytest.raises(UnikraftCloudError) as caught:
+                await sandbox(ukc).exec("x")
+        assert caught.value.status == 502
+        assert fake.plugin_paths().count("/commands/c1/wait_timeout") == 3
+
+    async def test_a_failed_poll_after_the_end_is_retried_too(self) -> None:
+        fake = FakeSandbox()
+        fake.failing_polls = 2
+        fake.on_run(stdout=b"out", exits_after_polls=0)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x")
+        assert result.stdout == b"out"
+
+    async def test_too_many_failed_polls_after_the_end_give_up(self) -> None:
+        fake = FakeSandbox()
+        fake.failing_polls = 3
+        fake.on_run(stdout=b"out", exits_after_polls=0)
+        async with cloud(fake) as ukc:
+            with pytest.raises(UnikraftCloudError) as caught:
+                await sandbox(ukc).exec("x")
+        assert caught.value.status == 500
+
+    async def test_a_stream_left_early_leaves_no_stray_failure_behind(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = FakeSandbox()
+        fake.failing_waits = NEVER
+        fake.on_run(stdout=b"hello", exits_after_polls=NEVER)
+        loop = asyncio.get_running_loop()
+        stray: list[str | None] = []
+        loop.set_exception_handler(lambda loop, context: stray.append(context.get("message")))
+        try:
+            async with cloud(fake) as ukc:
+                command = await sandbox(ukc).run("x")
+                stream = command.stream()
+                async for chunk in stream:
+                    assert chunk.data == b"hello"
+                    break
+                # The wait behind the stream has failed by now; leaving the
+                # stream must still account for it.
+                await asyncio.sleep(0.02)
+                await stream.aclose()
+            del stream, command
+            gc.collect()
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(None)
+        assert stray == []
 
 
 class ExitedBeforeSignal(FakeSandbox):

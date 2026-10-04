@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections.abc import Awaitable
 from typing import Any
 
 import httpx
@@ -113,6 +114,12 @@ class FakeSandbox:
         self.failing_signals = 0
         self.failing_stdin = 0
         self.failing_reads = 0
+        #: How many waits for a command's end fail, other than by the command
+        #: still running, before they work again.
+        self.failing_waits = 0
+        #: How long the metro proxy lets a plugin request run before it
+        #: answers 504 itself; None lets every request run to its end.
+        self.proxy_timeout: float | None = None
         self.recorder = Recorder(self.handle)
         self._next = 1
 
@@ -137,8 +144,18 @@ class FakeSandbox:
         if path in ("/v1/instances", "/v1/instances/wait"):
             return self._platform_instances(request)
         if path == self.prefix or path.startswith(self.prefix + "/"):
-            return await self._plugin(request, path[len(self.prefix) :])
+            return await self._behind_proxy(self._plugin(request, path[len(self.prefix) :]))
         return _json(404, error_envelope(404, f"no route for {path}"))
+
+    async def _behind_proxy(self, answer: Awaitable[httpx.Response]) -> httpx.Response:
+        """The plugin's answer, or the proxy's HTML 504 when it takes too long."""
+        if self.proxy_timeout is None:
+            return await answer
+        try:
+            return await asyncio.wait_for(answer, self.proxy_timeout)
+        except asyncio.TimeoutError:
+            page = "<html><center><h1>504 Gateway Time-out</h1></center></html>"
+            return httpx.Response(504, text=page, headers={"content-type": "text/html"})
 
     def _platform_instances(self, request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
@@ -246,6 +263,11 @@ class FakeSandbox:
             await command.exited.wait()
             return _json(200, empty_envelope())
         if op == "wait_timeout":
+            if body["timeout_s"] < 0:
+                return _json(400, error_envelope(400, "timeout is not a representable duration"))
+            if self.failing_waits > 0:
+                self.failing_waits -= 1
+                return _json(502, error_envelope(502, "bad gateway"))
             try:
                 await asyncio.wait_for(command.exited.wait(), body["timeout_s"])
             except asyncio.TimeoutError:

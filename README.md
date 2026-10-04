@@ -282,6 +282,69 @@ for quota in await ukc.users.quotas():
     print(quota.metro, quota.used, quota.hard)
 ```
 
+## The sandbox plugin
+
+A plugin is a helper loaded into an instance beside its workload, and reached through the
+instance on the metro that runs it. The sandbox plugin runs commands and moves files
+inside an instance; `sandbox()` on an instance handle is its client, and nothing is sent
+until it is used.
+
+```python
+from unikraft_cloud import ExecTimeoutError
+
+fra = ukc.metro("fra")
+inst = await fra.instances.create(
+    image="org/app:latest",
+    memory_mb=1024,
+    plugins=[{"name": "sandbox", "image": "plugins/sandbox:latest", "config": {}}],
+    autostart=True,
+    timeout_s=60,
+)
+sb = fra.instances.get(uuid=inst.uuid).sandbox()
+await sb.wait_ready(timeout=60)  # until the plugin answers; PluginNotReadyError otherwise
+
+# A shell line, or an argument vector run without a shell. The exit code is reported, not
+# raised; output is collected, and handed over as it arrives if you ask.
+result = await sb.exec("make test", cwd="/app", on_output=lambda chunk: print(chunk.data))
+result = await sb.exec(["python", "-c", "print('no quoting needed')"])
+print(result.exit_code, result.stdout, result.stderr)
+
+# A timeout interrupts the command and waits for it to end; with a grace period a command
+# that ignores the interrupt is given up on, and the error carries it for you to signal.
+try:
+    await sb.exec("./long-build", timeout=600, wait_delay=10, forget=True)
+except ExecTimeoutError as err:
+    await err.command.signal("KILL")
+
+# Start, feed, follow and finish a command yourself.
+cmd = await sb.run("sort")
+await cmd.feed_stdin(b"b\na\n")
+await cmd.close_stdin()
+async for chunk in cmd.stream():  # until the command ends
+    ...
+code = await cmd.wait(timeout=30)  # None while it still runs
+await cmd.delete()  # once it has ended
+
+# Files move in chunks, so no request size limit applies; a download lands whole or not
+# at all.
+await sb.fs.write("/app/config.json", data, parents=True)
+await sb.fs.upload_file("./bundle.tar", "/app/")
+async for piece in sb.fs.stream("/app/out.bin"):
+    ...
+await sb.fs.read_to("/app/out.bin", "./out.bin")
+```
+
+`ExecResult.exit_code` is negative for a command a signal ended: `-2` after the
+interrupt a timeout sends. A command left behind when `exec` fails or is cancelled keeps
+running in the sandbox, for you to signal or forget. `PluginNotReadyError` and
+`ExecTimeoutError` are `UnikraftCloudError` and builtin `TimeoutError` both, like
+`WaitTimeoutError`.
+
+Any other plugin is addressed the same way: `plugin("name")` on an instance handle resolves
+its route once, and `.client(SomeApi)` builds a client there. The sandbox plumbing is
+`ukc.api.plugins.sandbox.for_instance(uuid)`, and the generated clients it wraps come from
+the `unikraft-cloud-plugin-sandbox-api` package.
+
 ## The plumbing layer
 
 Every operation in the specification is available raw, returning the response envelope
