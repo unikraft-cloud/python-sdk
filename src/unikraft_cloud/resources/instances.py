@@ -639,6 +639,7 @@ class Instances(Resource[InstancesApi]):
                 fetch=lambda target: self.read(target, opts),
                 what=f"instance {describe_ref(ref)}",
                 options=call,
+                lookup=True,
             ),
         )
 

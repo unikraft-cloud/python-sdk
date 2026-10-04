@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable, Generator
 from typing import Any, Generic, TypeVar
 
 from .fanout import MetroFailure, MetroFanoutError
-from .handle import ResourceHandle
+from .handle import ResourceHandle, spent
 from .metro import Metro
 
 __all__ = ["HandleSet"]
@@ -49,10 +49,14 @@ class HandleSet(Generic[H, T]):
 
     def handles(self) -> Awaitable[list[H]]:
         """The individual handles, one per metro holding the resource."""
-        if self._handles is None:
+        # A set only looks its matches up, so a lookup that failed is made
+        # again by the next operation on the set; one a caller gave up on
+        # runs on, shielded, and serves the next operation.
+        if spent(self._handles):
             self._handles = asyncio.ensure_future(self._locate())
         # Shielded: every operation on the set shares this task, so one giving
         # up on it must not cancel the lookup the others are waiting on.
+        assert self._handles is not None
         return asyncio.shield(self._handles)
 
     async def where(self) -> list[Metro]:

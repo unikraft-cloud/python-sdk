@@ -275,6 +275,7 @@ class ServiceGroups(Resource[ServicesApi]):
                 fetch=lambda target: self.read(target, opts),
                 what=f"service group {describe_ref(ref)}",
                 options=call,
+                lookup=True,
             ),
         )
 

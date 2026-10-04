@@ -76,13 +76,17 @@ class HandleSteps(Generic[T]):
     #: before a chained `wait()` runs); false for a handle that merely identifies
     #: a resource, which is what keeps `get(ref).suspend()` down to one request.
     sequential: bool = False
+    #: Whether `locate` only reads, so the next await repeats a lookup that
+    #: failed. Unset for a create; a chained operation inherits it from its parent.
+    lookup: bool = False
 
 
 class ResourceHandle(Generic[T]):
     """A lazily-evaluated reference to one resource in one metro.
 
-    Nothing is sent until the handle is awaited or a chained operation runs, and
-    each step is performed at most once however many times it is awaited.
+    Nothing is sent until the handle is awaited or a chained operation runs.
+    However many times it is awaited, an operation is performed once, and a
+    lookup once unless it failed, in which case the next await repeats it.
     """
 
     def __init__(self, steps: HandleSteps[T]) -> None:
@@ -147,6 +151,7 @@ class ResourceHandle(Generic[T]):
             what=self._steps.what,
             sequential=True,
             options=self._steps.options,
+            lookup=self._steps.lookup,
         )
 
     def _options(
@@ -172,7 +177,7 @@ class ResourceHandle(Generic[T]):
         return (await self._locate()).target
 
     def _locate(self) -> Awaitable[Located[T]]:
-        if self._located is None:
+        if self._located is None or (self._steps.lookup and spent(self._located)):
             # Memoised as a task rather than a coroutine so several awaits, and
             # several chained operations, share the one lookup.
             self._located = asyncio.ensure_future(self._steps.locate())
@@ -180,16 +185,30 @@ class ResourceHandle(Generic[T]):
         # cancel the lookup every other caller is waiting on.
         return asyncio.shield(self._located)
 
-    def _evaluate(self) -> Awaitable[T]:
-        if self._value is None:
-            self._value = asyncio.ensure_future(self._read())
-        return asyncio.shield(self._value)
-
-    async def _read(self) -> T:
+    async def _evaluate(self) -> T:
         located = await self._locate()
         if located.value is not None:
             return located.value
-        return await self._steps.fetch(located.target)
+        # Memoised apart from the lookup, so a chained operation's one outcome
+        # stands while its parent's lookup is repeated. A handle that only
+        # looks a resource up fetches it by a read, made again if it failed.
+        retried = self._steps.lookup and not self._steps.sequential
+        if self._value is None or (retried and spent(self._value)):
+            self._value = asyncio.ensure_future(self._steps.fetch(located.target))
+        return await asyncio.shield(self._value)
+
+
+def spent(task: asyncio.Future[Any] | None) -> bool:
+    """Whether a memoised task cannot serve another caller.
+
+    One that failed or was cancelled is not an answer, and one made on another
+    event loop cannot be awaited on this one; either is made afresh.
+    """
+    if task is None:
+        return True
+    if task.get_loop() is not asyncio.get_running_loop():
+        return True
+    return task.done() and (task.cancelled() or task.exception() is not None)
 
 
 def _explicit_target(target: MetroTarget, opts: CallOptions) -> MetroTarget:

@@ -484,6 +484,75 @@ class TestMissingNames:
         assert caught.value.status == 404
 
 
+class TestLookupsAreRepeated:
+    async def test_a_name_not_listed_yet_is_looked_up_again(self) -> None:
+        rows: dict[str, list[dict[str, Any]]] = {"fra": [], "dal": []}
+        recorder = cloud(instances=lambda where: rows[where])
+        async with client(recorder) as ukc:
+            handle = ukc.instances.get(name="web")
+            with pytest.raises(NotFoundError):
+                await handle
+            rows["fra"] = [instance("u1", "web")]
+            found = await handle
+        assert (found.metro, found.uuid) == ("fra", "u1")
+        assert sorted(recorder.metros("/v1/instances")) == ["dal", "dal", "fra", "fra"]
+
+    async def test_a_metro_that_failed_to_answer_is_asked_again(self) -> None:
+        down = ["dal"]
+        recorder = cloud(instances=lambda where: [instance(f"{where}-1", "web")], failing=down)
+        async with client(recorder) as ukc:
+            matches = ukc.instances.each(name="web")
+            with pytest.raises(MetroFanoutError):
+                await matches.size()
+            down.clear()
+            assert await matches.size() == 2
+
+    async def test_a_create_that_failed_is_not_sent_again(self) -> None:
+        recorder = queued([(500, {"status": "error", "message": "boom"})])
+        async with client(recorder, metro="fra") as ukc:
+            handle = ukc.instances.create(image="org/app:latest")
+            with pytest.raises(ServerError):
+                await handle
+            with pytest.raises(ServerError):
+                await handle
+        assert len(recorder.calls) == 1
+
+    async def test_an_operation_chained_onto_a_name_not_listed_yet_runs_once_it_is(self) -> None:
+        rows: dict[str, list[dict[str, Any]]] = {"fra": [], "dal": []}
+        recorder = cloud(instances=lambda where: rows[where])
+        async with client(recorder) as ukc:
+            suspend = ukc.instances.get(name="web").suspend()
+            with pytest.raises(NotFoundError):
+                await suspend
+            assert "/v1/instances/suspend" not in recorder.paths
+            rows["fra"] = [instance("u1", "web")]
+            suspended = await suspend
+            # The operation itself ran once, and its outcome stands.
+            assert await suspend is suspended
+        assert recorder.paths.count("/v1/instances/suspend") == 1
+        assert sorted(recorder.metros("/v1/instances")) == ["dal", "dal", "fra", "fra"]
+
+    async def test_an_operation_that_failed_is_not_sent_again(self) -> None:
+        broken = [True]
+
+        def route(request: httpx.Request) -> tuple[int, Any]:
+            if request.url.path == "/v1/instances/suspend":
+                if broken[0]:
+                    return 500, {"status": "error", "message": "boom"}
+                return 200, envelope({"instances": [changed_instance()]})
+            return 200, envelope({"instances": [instance("u1", "web")]})
+
+        recorder = routed(route)
+        async with client(recorder, metro="fra") as ukc:
+            suspend = ukc.instances.get(name="web").suspend()
+            with pytest.raises(ServerError):
+                await suspend
+            broken[0] = False
+            with pytest.raises(ServerError):
+                await suspend
+        assert recorder.paths.count("/v1/instances/suspend") == 1
+
+
 class TestPinnedScope:
     async def test_refuses_a_metro_the_pinned_endpoint_does_not_serve(self) -> None:
         recorder = cloud()
