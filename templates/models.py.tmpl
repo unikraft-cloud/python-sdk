@@ -37,6 +37,11 @@ from pydantic import BaseModel, ConfigDict, Field
 {{ range $m := .Models }}
 {{- $schema := $m.Schema }}
 {{- $name := $m.SchemaName }}
+{{- /* A request body is the caller's to fill in, so a field the specification
+  requires is required here too. A response is the server's, and one shape
+  serves several answers, so there every field stays optional. The TypeSpec
+  convention names request schemas `<Verb><Resource>Request*`. */ -}}
+{{- $request := and (contains "Request" $name) (not (contains "Response" $name)) }}
 {{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
 {{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
 {{- if and (not $schema.Enum) (not $union) (not $scalar) }}
@@ -48,8 +53,13 @@ class {{ $name }}(BaseModel):
 {{ end }}
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
+{{- if $request }}
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+{{- else }}
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
+{{- end }}
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 {{ range $prop := propertyNamesOrdered $name $schema }}
 {{- $p := getProperty $schema $prop }}
@@ -58,7 +68,13 @@ class {{ $name }}(BaseModel):
   `datetime` and writes it back out in the same form. */ -}}
 {{- $type := schemaToPyType $p }}
 {{- if eq $p.Format "date-time" }}{{ $type = "datetime" }}{{ end }}
+{{- if and $request (getPropertyRequired $schema $prop) }}
 {{- if eq $safe $prop }}
+    {{ $safe }}: {{ $type }}
+{{- else }}
+    {{ $safe }}: {{ $type }} = Field(alias="{{ $prop }}")
+{{- end }}
+{{- else if eq $safe $prop }}
     {{ $safe }}: {{ $type }} | None = None
 {{- else }}
     {{ $safe }}: {{ $type }} | None = Field(default=None, alias="{{ $prop }}")
