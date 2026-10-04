@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
 from . import models_gen as models
 
 
 class ImagesApi(ApiClient):
-    """Low-level "plumbing" client for the `Images` resource.
+    """Low-level "plumbing" client for the `images` resource.
 
     Methods mirror the OpenAPI specification and return the raw response
     envelope. The idiomatic clients are built on top of this.
@@ -60,6 +59,44 @@ class ImagesApi(ApiClient):
                 "digest": digest,
                 "tag": tag,
             },
+            body=body,
+            headers=headers,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    async def pin_images(
+        self,
+        *,
+        body: list[models.PinImageRequestItem],
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> models.PinImagesResponse:
+        """Pin Images"""
+        return await self.request(
+            models.PinImagesResponse,
+            method="POST",
+            path="/v1/images",
+            body=body,
+            headers=headers,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    async def unpin_images(
+        self,
+        *,
+        body: list[models.UnpinImageRequestItem],
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> models.UnpinImagesResponse:
+        """Unpin Images"""
+        return await self.request(
+            models.UnpinImagesResponse,
+            method="DELETE",
+            path="/v1/images",
             body=body,
             headers=headers,
             base_url=base_url,

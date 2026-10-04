@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 from urllib.parse import quote
 
-from ...core.http import UNSET, ApiClient, TimeoutOption
+from ...core.http import UNSET, ApiClient, TimeoutOption, comma_separated
 from . import models_gen as models
 
 
 class InstancesApi(ApiClient):
-    """Low-level "plumbing" client for the `Instances` resource.
+    """Low-level "plumbing" client for the `instances` resource.
 
     Methods mirror the OpenAPI specification and return the raw response
     envelope. The idiomatic clients are built on top of this.
@@ -25,7 +24,7 @@ class InstancesApi(ApiClient):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.CreateCheckpointInstancesResponse:
-        """Create checkpoint instances"""
+        """Create Checkpoint Instances"""
         return await self.request(
             models.CreateCheckpointInstancesResponse,
             method="POST",
@@ -82,7 +81,7 @@ class InstancesApi(ApiClient):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteCheckpointInstancesResponse:
-        """Delete checkpoint instance by UUID"""
+        """Delete Checkpoint Instance by UUID"""
         return await self.request(
             models.DeleteCheckpointInstancesResponse,
             method="DELETE",
@@ -100,7 +99,7 @@ class InstancesApi(ApiClient):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteCheckpointInstancesResponse:
-        """Delete checkpoint instances"""
+        """Delete Checkpoint Instances"""
         return await self.request(
             models.DeleteCheckpointInstancesResponse,
             method="DELETE",
@@ -196,7 +195,7 @@ class InstancesApi(ApiClient):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.GetCheckpointHistoryResponse:
-        """Get checkpoint history"""
+        """Get Checkpoint History"""
         return await self.request(
             models.GetCheckpointHistoryResponse,
             method="GET",
@@ -218,7 +217,7 @@ class InstancesApi(ApiClient):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.GetCheckpointHistoryResponse:
-        """Get checkpoint history by UUID"""
+        """Get Checkpoint History by UUID"""
         return await self.request(
             models.GetCheckpointHistoryResponse,
             method="GET",
@@ -237,7 +236,7 @@ class InstancesApi(ApiClient):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.GetCheckpointInstancesResponse:
-        """Get checkpoint instance by UUID"""
+        """Get Checkpoint Instance by UUID"""
         return await self.request(
             models.GetCheckpointInstancesResponse,
             method="GET",
@@ -257,15 +256,15 @@ class InstancesApi(ApiClient):
         name: list[str] | None = None,
         details: bool | None = None,
         count: int | None = None,
-        tags: list[str] | None = None,
         from_: str | None = None,
         order: models.PaginationOrder | None = None,
         sortby: models.PaginationSortBy | None = None,
+        tags: list[str] | None = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.GetCheckpointInstancesResponse:
-        """List checkpoint instances"""
+        """List Checkpoint Instances"""
         return await self.request(
             models.GetCheckpointInstancesResponse,
             method="GET",
@@ -275,10 +274,10 @@ class InstancesApi(ApiClient):
                 "name": name,
                 "details": details,
                 "count": count,
-                "tags": tags,
                 "from": from_,
                 "order": order,
                 "sortby": sortby,
+                "tags": comma_separated(tags),
             },
             headers=headers,
             base_url=base_url,
@@ -316,7 +315,7 @@ class InstancesApi(ApiClient):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.GetCheckpointHistoryResponse:
-        """Get instances checkpoint history"""
+        """Get Instances Checkpoint History"""
         return await self.request(
             models.GetCheckpointHistoryResponse,
             method="GET",
@@ -338,7 +337,7 @@ class InstancesApi(ApiClient):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.GetCheckpointHistoryResponse:
-        """Get instance checkpoint history by UUID"""
+        """Get Instance Checkpoint History by UUID"""
         return await self.request(
             models.GetCheckpointHistoryResponse,
             method="GET",
@@ -355,7 +354,7 @@ class InstancesApi(ApiClient):
         name: list[str] | None = None,
         offset: list[int] | None = None,
         limit: list[int] | None = None,
-        body: list[models.GetInstancesLogsRequestItem] | None = None,
+        body: list[models.GetInstancesLogsRequestItem],
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
@@ -446,9 +445,9 @@ class InstancesApi(ApiClient):
         details: bool | None = None,
         count: int | None = None,
         from_: str | None = None,
-        tags: list[str] | None = None,
         order: models.PaginationOrder | None = None,
         sortby: models.PaginationSortBy | None = None,
+        tags: list[str] | None = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
@@ -464,9 +463,9 @@ class InstancesApi(ApiClient):
                 "details": details,
                 "count": count,
                 "from": from_,
-                "tags": tags,
                 "order": order,
                 "sortby": sortby,
+                "tags": comma_separated(tags),
             },
             headers=headers,
             base_url=base_url,
@@ -502,10 +501,10 @@ class InstancesApi(ApiClient):
         name: list[str] | None = None,
         details: bool | None = None,
         count: int | None = None,
-        tags: list[str] | None = None,
         from_: str | None = None,
         order: models.PaginationOrder | None = None,
         sortby: models.PaginationSortBy | None = None,
+        tags: list[str] | None = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
@@ -520,10 +519,10 @@ class InstancesApi(ApiClient):
                 "name": name,
                 "details": details,
                 "count": count,
-                "tags": tags,
                 "from": from_,
                 "order": order,
                 "sortby": sortby,
+                "tags": comma_separated(tags),
             },
             headers=headers,
             base_url=base_url,
@@ -656,7 +655,7 @@ class InstancesApi(ApiClient):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateCheckpointInstancesResponse:
-        """Update checkpoint instance by UUID"""
+        """Update Checkpoint Instance by UUID"""
         return await self.request(
             models.UpdateCheckpointInstancesResponse,
             method="PATCH",
@@ -675,7 +674,7 @@ class InstancesApi(ApiClient):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateCheckpointInstancesResponse:
-        """Update checkpoint instances"""
+        """Update Checkpoint Instances"""
         return await self.request(
             models.UpdateCheckpointInstancesResponse,
             method="PATCH",
@@ -792,7 +791,7 @@ class InstancesApi(ApiClient):
         state: list[models.InstanceState] | None = None,
         timeout_ms: list[int] | None = None,
         timeout_s: list[int] | None = None,
-        body: list[models.WaitInstancesRequestItem] | None = None,
+        body: list[models.WaitInstancesRequestItem],
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,

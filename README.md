@@ -231,6 +231,11 @@ all subclass `UnikraftCloudError`. The API reports some failures inside an other
 envelope, per item; those carry the API's own code on `err.errors[n].code` and are raised
 with the status that says the same thing.
 
+Two failures are caught before anything is sent, and are not `UnikraftCloudError`: a
+property the resource does not have is a `TypeError`, and a request missing a field the
+specification requires -- a service group without its `services`, an instance's `volumes`
+entry without its `at` -- is pydantic's `ValidationError`.
+
 A `wait()` that runs out of time raises `WaitTimeoutError`, which is also a builtin
 `TimeoutError`, and carries the state the API last saw:
 

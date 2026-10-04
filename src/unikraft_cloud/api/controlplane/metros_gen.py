@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
 from . import models_gen as models

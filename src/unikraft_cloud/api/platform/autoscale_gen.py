@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 from urllib.parse import quote
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
@@ -11,7 +10,7 @@ from . import models_gen as models
 
 
 class AutoscaleApi(ApiClient):
-    """Low-level "plumbing" client for the `Autoscale` resource.
+    """Low-level "plumbing" client for the `autoscale` resource.
 
     Methods mirror the OpenAPI specification and return the raw response
     envelope. The idiomatic clients are built on top of this.
@@ -156,7 +155,7 @@ class AutoscaleApi(ApiClient):
         self,
         uuid: str,
         *,
-        body: models.GetAutoscaleConfigurationPolicyRequest,
+        body: models.GetAutoscaleConfigurationPolicyRequest | None = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
