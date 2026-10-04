@@ -95,12 +95,20 @@
 {{- if not .Schema }}
 {{- fail (printf "%s %s: query parameter %q has no schema, so the templates cannot serialize it" $op.Method $op.Path .Name) }}
 {{- end }}
+{{- /* A query string has no null: the transport omits a None value and
+       spells a None list item as "None". */ -}}
+{{- if .Schema.Value.Nullable }}
+{{- fail (printf "%s %s: query parameter %q is nullable, but a query string has no null; drop nullable in the specification" $op.Method $op.Path .Name) }}
+{{- end }}
 {{- /* QueryValue is a scalar or a list of scalars; an object has no style the
        transport knows. */ -}}
 {{- $qt := .Schema.Value.Type }}
 {{- if $qt.Is "array" }}
 {{- if not .Schema.Value.Items }}
 {{- fail (printf "%s %s: query parameter %q is an array without items, so the templates cannot serialize it" $op.Method $op.Path .Name) }}
+{{- end }}
+{{- if .Schema.Value.Items.Value.Nullable }}
+{{- fail (printf "%s %s: query parameter %q has nullable items, but a query string has no null; drop nullable in the specification" $op.Method $op.Path .Name) }}
 {{- end }}
 {{- $qi := .Schema.Value.Items.Value.Type }}
 {{- if not (or ($qi.Is "string") ($qi.Is "integer") ($qi.Is "number") ($qi.Is "boolean")) }}
@@ -170,6 +178,9 @@ class {{ pascalcase $tag }}Api(ApiClient):
 {{- if not .Schema -}}
 {{- fail (printf "%s %s: path parameter %q has no schema, so the templates cannot serialize it" $.Method $.Path .Name) -}}
 {{- end -}}
+{{- if .Schema.Value.Nullable -}}
+{{- fail (printf "%s %s: path parameter %q is nullable, but a path segment has no null; drop nullable in the specification" $.Method $.Path .Name) -}}
+{{- end -}}
 {{- $type := .Schema.Value.Type -}}
 {{- if $type.Is "string" -}}
 {{- else if or ($type.Is "integer") ($type.Is "number") ($type.Is "boolean") -}}
@@ -209,8 +220,8 @@ class {{ pascalcase $tag }}Api(ApiClient):
 {{- fail (printf "%s %s: the %s response is %s without a schema, so the templates have no model to parse it into" $.Method $.Path $entry.Code $media) -}}
 {{- end -}}
 {{- with $content.Schema.Value -}}
-{{- if or .Enum (and (or .OneOf .AnyOf) (not .Properties)) -}}
-{{- fail (printf "%s %s: the %s response is a union or an enumeration, which is no type the transport decodes into; wrap it in an object" $.Method $.Path $entry.Code) -}}
+{{- if or .Enum .Nullable (and (or .OneOf .AnyOf) (not .Properties)) -}}
+{{- fail (printf "%s %s: the %s response is nullable, a union or an enumeration, which is no type the transport decodes into; wrap it in an object that is never null" $.Method $.Path $entry.Code) -}}
 {{- end -}}
 {{- end -}}
 {{- $kinds = append $kinds $media -}}
@@ -375,11 +386,19 @@ class {{ pascalcase $tag }}Api(ApiClient):
         {{- if not .Schema }}
         {{- fail (printf "%s %s: header parameter %q has no schema, so the templates cannot serialize it" $.Method $.Path .Name) }}
         {{- end }}
+        {{- /* A header has no null: a None value is left out, and a None item
+               has no spelling. */ -}}
+        {{- if .Schema.Value.Nullable }}
+        {{- fail (printf "%s %s: header parameter %q is nullable, but a header has no null; drop nullable in the specification" $.Method $.Path .Name) }}
+        {{- end }}
         {{- $type := .Schema.Value.Type }}
         {{- if $type.Is "string" }}
         {{- else if or ($type.Is "integer") ($type.Is "number") ($type.Is "boolean") }}
         {{- $value = printf "_text(%s)" $value }}
         {{- else if and ($type.Is "array") .Schema.Value.Items }}
+        {{- if .Schema.Value.Items.Value.Nullable }}
+        {{- fail (printf "%s %s: header parameter %q has nullable items, but a header has no null; drop nullable in the specification" $.Method $.Path .Name) }}
+        {{- end }}
         {{- $items := .Schema.Value.Items.Value.Type }}
         {{- if not (or ($items.Is "string") ($items.Is "integer") ($items.Is "number") ($items.Is "boolean")) }}
         {{- fail (printf "%s %s: header parameter %q is not an array of scalars, so the templates cannot serialize it" $.Method $.Path .Name) }}
