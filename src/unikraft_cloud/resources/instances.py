@@ -7,14 +7,14 @@ from __future__ import annotations
 # there spell the builtin out.
 import builtins
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from typing import Any, TypeVar, get_args
+from typing import Any, TypeGuard, TypeVar, get_args
 
 import httpx
 from pydantic import BaseModel
 
 from ..api.platform import models
 from ..api.platform.instances_gen import InstancesApi
-from ..core.errors import WaitTimeoutError
+from ..core.errors import NotFoundError, ResponseError, UnikraftCloudError, WaitTimeoutError
 from ..core.fanout import fanout
 from ..core.handle import HandleSteps, Located, MetroTarget, ResourceHandle
 from ..core.handle_set import HandleSet
@@ -56,6 +56,7 @@ __all__ = [
     "InstanceLogs",
     "InstanceMetrics",
     "InstanceSet",
+    "InstanceStoppedError",
     "Instances",
     "StartedInstance",
     "StoppedInstance",
@@ -154,31 +155,114 @@ class InstanceHistory(models.GetCheckpointHistoryResponseInstanceHistory):
 InstanceEditor = ResourceEditor["InstanceHandle[UpdatedInstance]"]
 
 
+class InstanceStoppedError(UnikraftCloudError):
+    """An instance stopped instead of running.
+
+    :meth:`Instances.create` raises this when the instance it made stopped
+    before it was running -- a node could not pull its image, say, or its kernel
+    crashed. The instance is read back so that the reason travels with the
+    error, and it is left as it is: read its console log, or delete it. One
+    gone already -- deleted on stop, say -- is described from the failed item
+    alone, with no reason to give.
+
+    .. code-block:: python
+
+        try:
+            web = await fra.instances.create(image="org/app:latest", autostart=True, timeout_s=30)
+        except InstanceStoppedError as err:
+            print(err.stop)  # e.g. "platform stop: image pull failed"
+            await fra.instances.get(uuid=err.instance.uuid).delete()
+    """
+
+    #: The instance, as it was read after it stopped, or as the failed item
+    #: described it when it was gone already.
+    instance: Instance
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        instance: Instance,
+        errors: tuple[ResponseError, ...] | None = None,
+        body: Any = None,
+    ) -> None:
+        super().__init__(message, kind="http", errors=errors, body=body)
+        self.instance = instance
+
+    @property
+    def stop(self) -> Stop | None:
+        """Why it stopped, decoded, when the platform says."""
+        return self.instance.stop
+
+
+def _ref_of(instance: models.Instance) -> Ref:
+    """The reference to address an instance the API reported by, its UUID first."""
+    return Ref(uuid=instance.uuid) if instance.uuid else Ref(name=instance.name)
+
+
 def _timed_out(res: BaseModel, wanted: str | None) -> None:
     """Report a wait that ran out of time as a timeout, not as any old failure.
 
     The API answers a lapsed wait with an error envelope that still carries the
-    state it last saw, which is what a caller wants to know.
+    state it last saw, which is what a caller wants to know, and names the
+    instances, which travel on ``errors``: a create whose wait lapsed still
+    hands over the instance it made.
     """
     message = getattr(res, "message", None)
     if getattr(res, "status", None) != "error" or not isinstance(message, str):
         return
     if "timed out" not in message.lower():
         return
+    state = _first_state(res)
     entries = getattr(getattr(res, "data", None), _KEY, None) or []
-    state = next((getattr(entry, "state", None) for entry in entries), None)
+    errors = tuple(
+        ResponseError(
+            uuid=getattr(entry, "uuid", None),
+            name=getattr(entry, "name", None),
+            state=getattr(entry, "state", None),
+        )
+        for entry in entries
+    )
     error = WaitTimeoutError(
         f"Timed out waiting for the instance{f' to be {wanted!r}' if wanted else ''}"
         f"{f'; it is {state!r}.' if state else '.'}",
         kind="http",
+        errors=errors or None,
         body=res,
     )
     error.state = state
     raise error
 
 
+def _first_state(res: BaseModel) -> str | None:
+    """The state the first reported item is in, when the response names one."""
+    entries = getattr(getattr(res, "data", None), _KEY, None) or []
+    return next((getattr(entry, "state", None) for entry in entries), None)
+
+
+def _create_wait_seconds(spec: Mapping[str, Any]) -> float | None:
+    """How long a create asks the API to wait for the instance to run, in seconds.
+
+    ``timeout_s`` wins; the deprecated ``wait_timeout_ms`` is read when it is
+    the only one given, rounded up to whole seconds. ``None`` is a create that
+    does not wait; less than zero, one that waits as long as the API lets it.
+    """
+    seconds = spec.get("timeout_s")
+    if _is_number(seconds):
+        return seconds
+    millis = spec.get("wait_timeout_ms")
+    if _is_number(millis):
+        return -(-millis // 1000) if millis >= 0 else -1
+    return None
+
+
+def _is_number(value: Any) -> TypeGuard[float]:
+    """Whether a value is a number the API takes as seconds; a bool is none."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _outlives(
-    timeout: float | httpx.Timeout | None, seconds: int | None
+    timeout: float | httpx.Timeout | None, seconds: float | None
 ) -> float | httpx.Timeout | None:
     """A timeout that outlasts a server-side wait of ``seconds``.
 
@@ -652,8 +736,14 @@ class Instances(Resource[InstancesApi]):
             )
         """
         call = options(headers, base_url, timeout)
-        opts = scoped(call, metros)
         check_spec(spec, models.CreateInstanceRequest, self.noun)
+        # A create that waits for the instance to run, by `timeout_s` or the
+        # deprecated `wait_timeout_ms`, holds the connection that long, so the
+        # read timeout outlasts it, as it does for `wait()`.
+        wait = _create_wait_seconds(spec)
+        if wait is not None and "timeout" not in call:
+            call["timeout"] = _outlives(self._session.platform.timeout, wait if wait >= 0 else None)
+        opts = scoped(call, metros)
         if spec.get("replicas"):
             raise TypeError(
                 "`replicas` creates several instances, and this returns a handle to one. "
@@ -665,9 +755,21 @@ class Instances(Resource[InstancesApi]):
         async def created() -> Located[Instance]:
             endpoint = await self._one_endpoint("Creating an instance", opts)
             res = await self.api.create_instance(body=body, **self._call(endpoint, opts))
-            instance = first_tagged(res, _KEY, endpoint.metro, Instance, "instance")
-            ref = Ref(uuid=instance.uuid) if instance.uuid else Ref(name=instance.name)
-            target = MetroTarget(metro=endpoint.metro, base_url=endpoint.base_url, ref=ref)
+            # A create that waited for the instance to run reports a lapsed wait
+            # the way `wait` does; an instance that stopped, whatever the
+            # message says, is a failed item read for its stop below.
+            if wait is not None and _first_state(res) not in ("stopped", "deleted"):
+                _timed_out(res, "running")
+            try:
+                instance = first_tagged(res, _KEY, endpoint.metro, Instance, "instance")
+            except UnikraftCloudError as err:
+                stopped = await self._stopped(err, endpoint, opts)
+                if stopped is None:
+                    raise
+                raise stopped from err
+            target = MetroTarget(
+                metro=endpoint.metro, base_url=endpoint.base_url, ref=_ref_of(instance)
+            )
             # A create reports less than a read does, so the handle reads the
             # instance rather than carrying the create's answer forward.
             return Located(target=target)
@@ -912,6 +1014,57 @@ class Instances(Resource[InstancesApi]):
             uuid=uuid, name=name, details=True, **self._call(target, opts)
         )
         return tag_first(res, _KEY, target, Instance, "instance")
+
+    async def _stopped(
+        self, err: UnikraftCloudError, endpoint: MetroEndpoint, opts: ScopeOptions
+    ) -> InstanceStoppedError | None:
+        """The failed create as a stopped instance, when that is what it was.
+
+        The API reports an instance that stopped before it was running as a
+        failed item naming the instance and its state, with no error code of
+        its own, so the instance is read for the reason; one deleted on stop
+        is reported in the ``deleted`` state, and what the item says is all
+        there is. An item in another state, or one carrying the API's own
+        error code -- a name already taken, say -- is that failure, and stays
+        as it is.
+        """
+        item = next((error for error in err.errors or () if error.uuid), None)
+        if item is None or item.uuid is None:
+            return None
+        if item.state is not None and item.state not in ("stopped", "deleted"):
+            return None
+        if item.state is None and item.code is not None:
+            return None
+        uuid = item.uuid
+        instance: Instance | None = None
+        if item.state != "deleted":
+            target = MetroTarget(
+                metro=endpoint.metro, base_url=endpoint.base_url, ref=Ref(uuid=uuid)
+            )
+            try:
+                instance = await self.read(target, opts)
+            except NotFoundError:
+                # Gone between the create's answer and the read.
+                instance = None
+            except UnikraftCloudError:
+                return None
+            if instance is not None and instance.state not in ("stopped", "deleted"):
+                return None
+        gone = instance is None or instance.state == "deleted"
+        if instance is None:
+            # What the failed item said is all there is.
+            instance = Instance(
+                uuid=uuid, name=item.name, state=item.state or "stopped", metro=endpoint.metro
+            )
+        detail = instance.describe_stop()
+        return InstanceStoppedError(
+            f"instance {describe_ref(_ref_of(instance))} stopped before it was running"
+            + (f": {detail}" if detail else "")
+            + ("; it is gone already" if gone else ""),
+            instance=instance,
+            errors=err.errors,
+            body=err.body,
+        )
 
     async def _find(self, endpoint: MetroEndpoint, ref: Ref, opts: ScopeOptions) -> Instance | None:
         """Look for one instance in one metro; absent is not a failure."""

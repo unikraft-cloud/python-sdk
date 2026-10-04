@@ -15,10 +15,13 @@ import pytest
 
 from unikraft_cloud import (
     REMOVE,
+    AlreadyExistsError,
     AmbiguousRefError,
     AuthenticationError,
+    InstanceStoppedError,
     MetroFanoutError,
     NotFoundError,
+    PlatformStopCode,
     Ref,
     ServerError,
     UnikraftCloud,
@@ -187,6 +190,8 @@ class TestPinnedToOneMetro:
         assert isinstance(caught.value, TimeoutError)
         assert caught.value.state == "stopped"
         assert "'running'" in str(caught.value)
+        assert caught.value.errors is not None
+        assert (caught.value.errors[0].uuid, caught.value.errors[0].state) == ("u1", "stopped")
 
     async def test_a_wait_outlives_the_timeout_it_asked_the_api_for(self) -> None:
         waited = {"uuid": "u1", "name": "web", "state": "running"}
@@ -794,6 +799,24 @@ class TestTimeouts:
             await ukc.instances.get(name="web")
         assert recorder.calls[0].extensions["timeout"]["read"] == 9.0
 
+    async def test_a_create_that_waits_outlives_the_timeout_it_asked_the_api_for(self) -> None:
+        recorder = queued([(200, envelope({"instances": [instance()]}))] * 2)
+        async with client(recorder, metro="fra", timeout=5.0) as ukc:
+            await ukc.instances.create(image="org/app:latest", autostart=True, timeout_s=30)
+            await ukc.instances.create(image="org/app:latest")
+        waited, plain = [call for call in recorder.calls if call.method == "POST"]
+        # The wait the API was asked for, plus the margin every wait is given.
+        assert waited.extensions["timeout"]["read"] == 40
+        assert plain.extensions["timeout"]["read"] == 5.0
+
+    async def test_the_deprecated_wait_in_milliseconds_is_outlived_too(self) -> None:
+        recorder = queued([(200, envelope({"instances": [instance()]}))] * 2)
+        async with client(recorder, metro="fra", timeout=5.0) as ukc:
+            await ukc.instances.create(image="org/app:latest", autostart=True, wait_timeout_ms=2500)
+        (waited,) = [call for call in recorder.calls if call.method == "POST"]
+        # 2.5 seconds rounds up to 3, plus the margin every wait is given.
+        assert waited.extensions["timeout"]["read"] == 13
+
     async def test_defaults_to_bounding_connecting_but_not_reading(self) -> None:
         recorder = queued([(200, envelope({"instances": [instance()]}))])
         async with client(recorder, metro="fra") as ukc:
@@ -942,3 +965,156 @@ class TestDiscoveryFailures:
             with pytest.raises(UnikraftCloudError, match="Name the metros you want") as caught:
                 [inst async for inst in ukc.instances.list()]
         assert caught.value.status == 500
+
+
+class TestCreateFailures:
+    def _stopped_create(self, *rows: dict[str, Any]) -> Recorder:
+        """A create whose autostart wait ended on a stopped instance, then its read."""
+        failed = {"status": "error", "uuid": "u1", "name": "web", "state": "stopped"}
+        return queued(
+            [
+                (200, envelope({"instances": [failed]}, status="error")),
+                (200, envelope({"instances": list(rows)})),
+            ]
+        )
+
+    async def test_an_instance_that_stopped_is_read_for_the_reason(self) -> None:
+        recorder = self._stopped_create(instance(state="stopped", stop_reason=4, stop_code=1))
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(InstanceStoppedError) as caught:
+                await ukc.instances.create(name="web", image="org/app:latest", autostart=True)
+        err = caught.value
+        assert err.instance.uuid == "u1"
+        assert err.stop is not None
+        assert err.stop.platform_code == PlatformStopCode.IMAGE_PULL_FAILED
+        assert (
+            str(err)
+            == 'instance uuid "u1" stopped before it was running: platform stop: image pull failed'
+        )
+        assert isinstance(err.__cause__, UnikraftCloudError)
+        assert err.errors is not None and err.errors[0].uuid == "u1"
+        assert [call.method for call in recorder.calls] == ["POST", "GET"]
+        assert recorder.calls[1].url.params["uuid"] == "u1"
+
+    async def test_a_stop_the_api_reports_as_a_lapsed_wait_is_still_a_stop(self) -> None:
+        failed = {"status": "error", "uuid": "u1", "name": "web", "state": "stopped"}
+        lapsed = envelope(
+            {"instances": [failed]}, status="error", message="Timed out waiting for instance"
+        )
+        recorder = queued(
+            [(200, lapsed), (200, envelope({"instances": [instance(state="stopped")]}))]
+        )
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(InstanceStoppedError):
+                await ukc.instances.create(name="web", image="org/app:latest", timeout_s=30)
+
+    async def test_a_create_that_did_not_wait_has_not_timed_out(self) -> None:
+        failed = {"status": "error", "uuid": "u1", "name": "web", "state": "starting"}
+        lapsed = envelope(
+            {"instances": [failed]}, status="error", message="Timed out waiting for instance"
+        )
+        recorder = queued([(200, lapsed)])
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(UnikraftCloudError) as caught:
+                await ukc.instances.create(name="web", image="org/app:latest")
+        assert not isinstance(caught.value, WaitTimeoutError)
+
+    async def test_an_instance_that_stopped_without_a_reason_still_says_so(self) -> None:
+        recorder = self._stopped_create(instance(state="stopped"))
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(
+                InstanceStoppedError, match=r"stopped before it was running$"
+            ) as caught:
+                await ukc.instances.create(name="web", image="org/app:latest")
+        assert caught.value.stop is None
+
+    async def test_an_instance_deleted_on_stop_is_still_a_stopped_instance(self) -> None:
+        # As the API reports it: the item is in the `deleted` state, nothing left to read.
+        gone = {"status": "error", "uuid": "u1", "name": "web", "state": "deleted"}
+        recorder = queued([(200, envelope({"instances": [gone]}, status="error"))])
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(InstanceStoppedError) as caught:
+                await ukc.instances.create(name="web", image="org/app:latest", timeout_s=30)
+        err = caught.value
+        assert (err.instance.uuid, err.instance.name, err.instance.state) == (
+            "u1",
+            "web",
+            "deleted",
+        )
+        assert (err.instance.metro, err.stop) == ("fra", None)
+        assert str(err).endswith("stopped before it was running; it is gone already")
+        assert len(recorder.calls) == 1
+
+    async def test_an_instance_gone_before_it_is_read_is_still_a_stopped_instance(self) -> None:
+        recorder = self._stopped_create()
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(InstanceStoppedError) as caught:
+                await ukc.instances.create(name="web", image="org/app:latest")
+        err = caught.value
+        assert (err.instance.uuid, err.instance.state, err.stop) == ("u1", "stopped", None)
+        assert str(err).endswith("; it is gone already")
+        assert len(recorder.calls) == 2
+
+    async def test_an_instance_not_stopped_after_all_keeps_the_original_error(self) -> None:
+        recorder = self._stopped_create(instance(state="running"))
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(UnikraftCloudError) as caught:
+                await ukc.instances.create(name="web", image="org/app:latest")
+        assert not isinstance(caught.value, InstanceStoppedError)
+
+    async def test_a_failure_with_the_apis_own_code_is_not_read_as_a_stop(self) -> None:
+        taken = {"status": "error", "uuid": "u1", "name": "web", "error": 23, "message": "taken"}
+        recorder = queued(
+            [
+                (200, envelope({"instances": [taken]}, status="error")),
+                (200, envelope({"instances": [instance(state="stopped")]})),
+            ]
+        )
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(AlreadyExistsError, match="taken"):
+                await ukc.instances.create(name="web", image="org/app:latest")
+        assert len(recorder.calls) == 1
+
+    async def test_a_failed_item_in_another_state_is_not_read_as_a_stop(self) -> None:
+        starting = {"status": "error", "uuid": "u1", "name": "web", "state": "starting"}
+        recorder = queued([(200, envelope({"instances": [starting]}, status="error"))])
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(UnikraftCloudError) as caught:
+                await ukc.instances.create(name="web", image="org/app:latest")
+        assert not isinstance(caught.value, InstanceStoppedError)
+        assert caught.value.errors is not None and caught.value.errors[0].state == "starting"
+        assert len(recorder.calls) == 1
+
+    async def test_a_failure_naming_no_instance_is_not_read(self) -> None:
+        refused = {"status": "error", "message": "Failed to create. Quota exceeded", "error": 19}
+        recorder = queued([(200, envelope({"instances": [refused]}, status="error"))])
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(UnikraftCloudError, match="Quota exceeded"):
+                await ukc.instances.create(name="web", image="org/app:latest")
+        assert len(recorder.calls) == 1
+
+    async def test_a_create_whose_wait_ran_out_is_a_timeout(self) -> None:
+        still = {"status": "error", "uuid": "u1", "name": "web", "state": "starting"}
+        recorder = queued(
+            [
+                (
+                    200,
+                    envelope({"instances": [still]}, status="error", message="Operation timed out"),
+                )
+            ]
+        )
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(WaitTimeoutError) as caught:
+                await ukc.instances.create(name="web", image="org/app:latest", timeout_s=5)
+        assert caught.value.state == "starting"
+        # The instance it made travels along, to be waited for or deleted.
+        assert caught.value.errors is not None and caught.value.errors[0].uuid == "u1"
+        assert len(recorder.calls) == 1
+
+    async def test_an_instance_read_back_as_deleted_is_gone_already(self) -> None:
+        recorder = self._stopped_create(instance(state="deleted"))
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(InstanceStoppedError) as caught:
+                await ukc.instances.create(name="web", image="org/app:latest")
+        assert (caught.value.instance.state, caught.value.stop) == ("deleted", None)
+        assert str(caught.value).endswith("; it is gone already")

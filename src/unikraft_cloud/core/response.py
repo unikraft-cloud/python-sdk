@@ -194,12 +194,14 @@ def _item_error(entry: Any) -> ResponseError:
     message = _field(entry, "message")
     uuid = _field(entry, "uuid")
     name = _field(entry, "name")
+    state = _field(entry, "state")
     return ResponseError(
         status=None if code is None else _STATUS_FOR_CODE.get(code),
         message=message if isinstance(message, str) else None,
         code=code,
         uuid=uuid if isinstance(uuid, str) else None,
         name=name if isinstance(name, str) else None,
+        state=state if isinstance(state, str) else None,
     )
 
 

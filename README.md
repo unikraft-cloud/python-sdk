@@ -237,13 +237,31 @@ specification requires -- a service group without its `services`, an instance's 
 entry without its `at` -- is pydantic's `ValidationError`.
 
 A `wait()` that runs out of time raises `WaitTimeoutError`, which is also a builtin
-`TimeoutError`, and carries the state the API last saw:
+`TimeoutError`, and carries the state the API last saw, with the instances it named on
+`err.errors` -- so a `create()` whose wait lapsed still hands over the instance it made:
 
 ```python
 try:
     await ukc.instances.get(name="web").wait(state="running", timeout_seconds=30)
 except TimeoutError as err:
     print(err.state)  # e.g. "starting"
+```
+
+A `create()` whose instance stopped instead of running -- a node could not pull its
+image, say -- raises `InstanceStoppedError`. The instance is read back so the error
+carries the decoded reason, and every instance read back carries the same decoding as
+its `stop`:
+
+```python
+from unikraft_cloud import InstanceStoppedError, PlatformStopCode
+
+fra = ukc.metro("fra")
+try:
+    await fra.instances.create(image="org/app:latest", autostart=True, timeout_s=30)
+except InstanceStoppedError as err:
+    print(err.stop)  # e.g. "platform stop: image pull failed"
+    if err.stop and err.stop.platform_code == PlatformStopCode.IMAGE_PULL_FAILED:
+        await fra.instances.get(uuid=err.instance.uuid).delete()
 ```
 
 When the API attaches a warning to an answer -- a deprecated field, say -- the SDK

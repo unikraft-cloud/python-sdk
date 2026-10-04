@@ -47,6 +47,8 @@ class ResponseError:
     uuid: str | None = None
     #: The name of the item that failed, when the API names it that way.
     name: str | None = None
+    #: The state the item was in, when the API reports it beside the failure.
+    state: str | None = None
 
 
 class UnikraftCloudError(Exception):
