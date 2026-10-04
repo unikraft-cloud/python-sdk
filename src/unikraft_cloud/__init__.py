@@ -104,6 +104,7 @@ from .resources.service_groups import (
     ServiceGroupSet,
     UpdatedServiceGroup,
 )
+from .resources.stop import KernelStopCode, KernelStopReason, PlatformStopCode, Stop, StopReason
 from .resources.users import Quotas, Users
 from .resources.volumes import (
     AttachedVolume,
@@ -161,6 +162,8 @@ __all__ = [
     "InstanceMetrics",
     "InstanceSet",
     "Instances",
+    "KernelStopCode",
+    "KernelStopReason",
     "Listing",
     "Located",
     "Metro",
@@ -180,6 +183,7 @@ __all__ = [
     "PatchItem",
     "PatchOp",
     "PlatformApi",
+    "PlatformStopCode",
     "Plugin",
     "PluginNotReadyError",
     "PluginRoute",
@@ -209,6 +213,8 @@ __all__ = [
     "Session",
     "SessionConfig",
     "StartedInstance",
+    "Stop",
+    "StopReason",
     "StoppedInstance",
     "SuspendedInstance",
     "TimeoutOption",

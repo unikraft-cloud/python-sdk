@@ -45,6 +45,7 @@ from ._shared import (
     scoped,
     tag_first,
 )
+from .stop import Stop, StopReason
 
 __all__ = [
     "DeletedInstance",
@@ -81,6 +82,18 @@ class Instance(models.Instance):
     """An instance (a microVM), tagged with the metro that served it."""
 
     metro: str
+
+    @property
+    def stop(self) -> Stop | None:
+        """Why the instance stopped, decoded; ``None`` while the API reports no reason."""
+        if self.stop_reason is None:
+            return None
+        return Stop(StopReason(self.stop_reason), self.stop_code)
+
+    def describe_stop(self) -> str:
+        """Why the instance stopped, in words; empty while the API reports no reason."""
+        stop = self.stop
+        return "" if stop is None else str(stop)
 
 
 class StartedInstance(models.StartInstancesResponseStartedInstance):
