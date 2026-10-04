@@ -22,14 +22,22 @@
 {{- fail (printf "schema %q has a name that the models module takes; rename it in the specification" $name) }}
 {{- end }}
 {{- end }}
+{{- /* A request model has `Request` and not `Response` in its name, after the
+  TypeSpec convention `<Verb><Resource>Request*`, or only requests reach it:
+  see the README, "Development". */ -}}
+{{- $named := list }}
+{{- range $m := .Models }}
+{{- if and (contains "Request" $m.SchemaName) (not (contains "Response" $m.SchemaName)) }}{{ $named = append $named $m.SchemaName }}{{ end }}
+{{- end }}
+{{- /* The types each model renders, by name, and all of them together. */ -}}
+{{- $modelTypes := dict }}
+{{- $allTypes := "" }}
 {{- /* A field name is derived here, once, and looked up where the field is
   rendered, so the imports the fields need are known before them. */ -}}
 {{- $fieldNames := dict }}
 {{- $needField := false }}
 {{- $needDatetime := false }}
 {{- $needLiteral := false }}
-{{- /* Every type the module renders, to find Any and Literal in. */ -}}
-{{- $types := "" }}
 {{- range $m := .Models }}
 {{- $name := $m.SchemaName }}
 {{- if $m.Schema.Enum }}{{ $needLiteral = true }}{{ end }}
@@ -38,7 +46,8 @@
 {{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
 {{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
 {{- $map := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) (or (not $schema.Type) ($schema.Type.Is "object")) (or $schema.AdditionalProperties.Schema (eq (toJson $schema.AdditionalProperties.Has) "true")) }}
-{{- if and (not $schema.Enum) (or $union $scalar $map) }}{{ $types = printf "%s %s" $types (schemaToPyType $schema) }}{{ end }}
+{{- $types := "" }}
+{{- if and (not $schema.Enum) (or $union $scalar $map) }}{{ $types = schemaToPyType $schema }}{{ end }}
 {{- range $prop := propertyNamesOrdered $name $m.Schema }}
 {{- $p := getProperty $m.Schema $prop }}
 {{- $types = printf "%s %s" $types (schemaToPyType $p) }}
@@ -62,9 +71,57 @@
 {{- if ne $safe $prop }}{{ $needField = true }}{{ end }}
 {{- $_ := set $fieldNames (printf "%s.%s" $name $prop) $safe }}
 {{- end }}
+{{- $_ := set $modelTypes $name $types }}
+{{- $allTypes = printf "%s %s" $allTypes $types }}
 {{- end }}
-{{- $needAny := regexMatch "\\bAny\\b" $types }}
-{{- if regexMatch "\\bLiteral\\b" $types }}{{ $needLiteral = true }}{{ end }}
+{{- $needAny := regexMatch "\\bAny\\b" $allTypes }}
+{{- if regexMatch "\\bLiteral\\b" $allTypes }}{{ $needLiteral = true }}{{ end }}
+{{- /* What a request body names is the caller's, and what a response names is
+  the server's. Each side is followed through the models it names, so a schema
+  reached from requests alone, however deep, is a request model, and one a
+  response reaches anywhere is not. The named request models seed the request
+  side, and stay request models wherever else they are reached. */ -}}
+{{- $requestSeed := "" }}
+{{- $responseSeed := "" }}
+{{- range $op := .Operations }}
+{{- with requestJSONSchema $op.Operation }}{{ $requestSeed = printf "%s %s" $requestSeed (pyTypeRef .) }}{{ end }}
+{{- range $entry := sortedResponseCodes $op.Operation.Responses }}{{ with $entry.Ref }}{{ with .Value }}
+{{- range $media, $content := .Content }}{{ with $content.Schema }}{{ $responseSeed = printf "%s %s" $responseSeed (pyTypeRef .) }}{{ end }}{{ end }}
+{{- end }}{{ end }}{{ end }}
+{{- end }}
+{{- $requestSide := dict }}
+{{- $responseSide := dict }}
+{{- range $m := .Models }}
+{{- $name := $m.SchemaName }}
+{{- if or (has $name $named) (regexMatch (printf "\\b%s\\b" $name) $requestSeed) }}{{ $_ := set $requestSide $name true }}{{ end }}
+{{- if regexMatch (printf "\\b%s\\b" $name) $responseSeed }}{{ $_ := set $responseSide $name true }}{{ end }}
+{{- end }}
+{{- /* Each model reached is followed once; a pass per model is as many as the
+  longest chain of references can need. */ -}}
+{{- $followedRequest := dict }}
+{{- $followedResponse := dict }}
+{{- range $pass := .Models }}
+{{- range $m := $.Models }}
+{{- $name := $m.SchemaName }}
+{{- if and (hasKey $requestSide $name) (not (hasKey $followedRequest $name)) }}
+{{- $_ := set $followedRequest $name true }}
+{{- $types := get $modelTypes $name }}
+{{- range $other := $.Models }}{{ if regexMatch (printf "\\b%s\\b" $other.SchemaName) $types }}{{ $_ := set $requestSide $other.SchemaName true }}{{ end }}{{ end }}
+{{- end }}
+{{- if and (hasKey $responseSide $name) (not (hasKey $followedResponse $name)) }}
+{{- $_ := set $followedResponse $name true }}
+{{- $types := get $modelTypes $name }}
+{{- range $other := $.Models }}{{ if regexMatch (printf "\\b%s\\b" $other.SchemaName) $types }}{{ $_ := set $responseSide $other.SchemaName true }}{{ end }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $requests := $named }}
+{{- range $m := .Models }}
+{{- $name := $m.SchemaName }}
+{{- if and (not (has $name $named)) (hasKey $requestSide $name) (not (hasKey $responseSide $name)) }}
+{{- $requests = append $requests $name }}
+{{- end }}
+{{- end }}
 --- models_gen.py
 # Code generated by openapi-gen; DO NOT EDIT.
 #
@@ -103,11 +160,10 @@ from pydantic import BaseModel, ConfigDict{{ if $needField }}, Field{{ end }}
 {{- /* A request body is the caller's to fill in, so a field the specification
   requires is required here too. A response is the server's, and one shape
   serves several answers, so there every field stays optional. Which is which
-  is told by name, as the TypeSpec convention `<Verb><Resource>Request*` has
-  it: a request schema named otherwise has every field optional, and a
-  response that carries a schema named `Request` fails to parse when the
-  server leaves a required field out. */ -}}
-{{- $request := and (contains "Request" $name) (not (contains "Response" $name)) }}
+  is told by name and by use, as the pass above has it: a schema named
+  otherwise that requests alone reach is a request too, and one a response
+  reaches stays optional. */ -}}
+{{- $request := has $name $requests }}
 {{- /* A union alias renders one union keyword and nothing else, so a schema
   that adds allOf or the other union keyword to it is not what it renders. */ -}}
 {{- if and (or $schema.OneOf $schema.AnyOf) (or $schema.AllOf (and $schema.OneOf $schema.AnyOf)) }}

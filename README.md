@@ -317,13 +317,14 @@ specification by [`openapi-gen`](https://github.com/unikraft-cloud) using the te
 [`templates/`](templates). Everything else is hand-written. Files ending in `_gen.py` are
 never edited by hand.
 
-The templates tell request models from response models by name, as the TypeSpec
-convention `<Verb><Resource>Request*` has it: a schema whose name contains `Request` and
-not `Response` keeps the fields the specification requires, so a request missing one fails
-at construction, and every other schema has every field optional, so a partial response
-always parses. A request body named otherwise still works but accepts a missing field,
-and a `Request`-named schema carried in a response fails to parse when the server leaves a
-required field out.
+The templates tell request models from response models by name, after the TypeSpec
+convention `<Verb><Resource>Request*`, and by use: a schema whose name contains
+`Request` and not `Response` keeps the fields the specification requires, and so does a
+schema that only requests reach -- through request bodies and the models they name,
+however deep -- so a request missing a required field fails at construction. A schema
+that any response reaches has every field optional, so a partial response always parses,
+and a `Request`-named schema that a response also carries fails to parse when the server
+leaves a required field out.
 
 ```sh
 make generate    # regenerate both plumbing clients from the specs
