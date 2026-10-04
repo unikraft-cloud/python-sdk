@@ -106,6 +106,13 @@ from .resources.service_groups import (
     UpdatedServiceGroup,
 )
 from .resources.stop import KernelStopCode, KernelStopReason, PlatformStopCode, Stop, StopReason
+from .resources.templates import (
+    DeletedTemplate,
+    Template,
+    TemplateHandle,
+    Templates,
+    TemplateSet,
+)
 from .resources.users import Quotas, Users
 from .resources.volumes import (
     AttachedVolume,
@@ -146,6 +153,7 @@ __all__ = [
     "DeletedCertificate",
     "DeletedInstance",
     "DeletedServiceGroup",
+    "DeletedTemplate",
     "DeletedVolume",
     "DetachedVolume",
     "ErrorKind",
@@ -219,6 +227,10 @@ __all__ = [
     "StopReason",
     "StoppedInstance",
     "SuspendedInstance",
+    "Template",
+    "TemplateHandle",
+    "TemplateSet",
+    "Templates",
     "TimeoutOption",
     "UnikraftCloud",
     "UnikraftCloudError",

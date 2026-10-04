@@ -285,8 +285,8 @@ except MetroFanoutError as err:
 
 ## Resources
 
-`instances`, `images`, `volumes`, `services`, `certificates` and `users` hang off any
-scope — `ukc`, `ukc.metro("fra")` or `ukc.metros([...])`.
+`instances`, `templates`, `images`, `volumes`, `services`, `certificates` and `users`
+hang off any scope — `ukc`, `ukc.metro("fra")` or `ukc.metros([...])`.
 
 Creating one takes the properties the API describes as keyword arguments, and a property
 it does not have is a `TypeError` rather than a field the server quietly ignores.
@@ -340,6 +340,26 @@ for image in await ukc.images.list():
 if not await ukc.images.exists("org/app:1.2.3"):
     build_and_push("org/app:1.2.3")
 found = await ukc.images.find("org/app@sha256:...")  # a tag of that digest, or None
+```
+
+### Templates
+
+A template is a snapshotted instance that new instances are cloned from.
+`prepare` makes sure one exists, building it from an instance specification when it does
+not; `clone` stamps instances out of it. The API types that specification as an instance,
+so its image and its plugins' images are plain references, not objects with a pull policy
+or credentials, and its `gpus` is the list an instance reports, not the count a create
+takes. The instance that becomes the template decides the moment it is snapshotted by
+writing `1` to `/uk/libukp/template_instance`.
+
+```python
+fra = ukc.metro("fra")
+await fra.templates.prepare("worker-v3", create_args={"image": "org/worker:v3", "memory_mb": 1024})
+job = await fra.templates.get(name="worker-v3").clone(
+    roms=[{"name": "job", "at": "/mnt/job", "files": [{"path": "job.json", "data": "{}"}]}],
+    volumes=[{"size_mb": 512, "at": "/tmp"}],
+    features=["delete-on-stop"],
+)
 ```
 
 ## The sandbox plugin
@@ -447,6 +467,7 @@ async with PlatformApi(config) as api:
 - [`examples/quickstart.py`](examples/quickstart.py) — create, wait, read logs, list, suspend, delete
 - [`examples/update.py`](examples/update.py) — patch objects and the staged editor
 - [`examples/sandbox.py`](examples/sandbox.py) — run commands and move files through the sandbox plugin
+- [`examples/templates.py`](examples/templates.py) — look an image up, prepare a template, clone it
 - [`examples/plumbing.py`](examples/plumbing.py) — the raw API on its own
 
 ## Development

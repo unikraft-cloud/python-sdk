@@ -217,7 +217,8 @@ class TestQuotas:
 
 class TestEveryResourceIsOnEveryScope:
     @pytest.mark.parametrize(
-        "attribute", ["instances", "volumes", "services", "certificates", "users"]
+        "attribute",
+        ["instances", "templates", "images", "volumes", "services", "certificates", "users"],
     )
     async def test_reachable_account_wide_and_per_metro(self, attribute: str) -> None:
         recorder = platform(volumes=[volume()])

@@ -278,12 +278,27 @@ def _first_state(res: BaseModel) -> str | None:
 
 
 def _create_wait_seconds(spec: Mapping[str, Any]) -> float | None:
-    """How long a create asks the API to wait for the instance to run, in seconds.
+    """How long a create asks the API to hold the connection, in seconds.
 
-    ``timeout_s`` wins; the deprecated ``wait_timeout_ms`` is read when it is
-    the only one given, rounded up to whole seconds. ``None`` is a create that
-    does not wait; less than zero, one that waits as long as the API lets it.
+    ``timeout_s`` is the wait for the instance to run; the deprecated
+    ``wait_timeout_ms`` is read when it is the only one given, rounded up to
+    whole seconds. A template prepared on the way adds ``prepare_timeout_s``,
+    or a wait the API bounds itself when none was given. ``None`` is a create
+    that does not wait; less than zero, one that waits as long as the API lets it.
     """
+    seconds = _run_wait_seconds(spec)
+    template = spec.get("template")
+    if template is None or not _field_of(template, "prepare"):
+        return seconds
+    prepare = _field_of(template, "prepare_timeout_s")
+    if not _is_number(prepare) or prepare <= 0:
+        return -1
+    if seconds is None:
+        return prepare
+    return -1 if seconds < 0 else seconds + prepare
+
+
+def _run_wait_seconds(spec: Mapping[str, Any]) -> float | None:
     seconds = spec.get("timeout_s")
     if _is_number(seconds):
         return seconds
@@ -296,6 +311,11 @@ def _create_wait_seconds(spec: Mapping[str, Any]) -> float | None:
 def _is_number(value: Any) -> TypeGuard[float]:
     """Whether a value is a number the API takes as seconds; a bool is none."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _field_of(spec: Any, name: str) -> Any:
+    """A field of a specification given as a mapping or as a model."""
+    return spec.get(name) if isinstance(spec, Mapping) else getattr(spec, name, None)
 
 
 def _outlives(
@@ -857,9 +877,9 @@ class Instances(Resource[InstancesApi]):
         """
         call = options(headers, base_url, timeout)
         check_spec(spec, models.CreateInstanceRequest, self.noun)
-        # A create that waits for the instance to run, by `timeout_s` or the
-        # deprecated `wait_timeout_ms`, holds the connection that long, so the
-        # read timeout outlasts it, as it does for `wait()`.
+        # A create that waits for the instance to run, or prepares a template on
+        # the way, holds the connection that long, so the read timeout outlasts
+        # it, as it does for `wait()`.
         wait = _create_wait_seconds(spec)
         if wait is not None and "timeout" not in call:
             call["timeout"] = _outlives(self._session.platform.timeout, wait)
@@ -879,7 +899,7 @@ class Instances(Resource[InstancesApi]):
             # the way `wait` does; an instance that stopped, whatever the
             # message says, is a failed item read for its stop below.
             if wait is not None and _first_state(res) not in ("stopped", "deleted"):
-                _timed_out(res, "running")
+                _timed_out(res, "running" if _run_wait_seconds(spec) is not None else None)
             try:
                 instance = first_tagged(res, _KEY, endpoint.metro, Instance, "instance")
             except UnikraftCloudError as err:

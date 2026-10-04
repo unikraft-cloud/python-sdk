@@ -28,6 +28,7 @@ from unikraft_cloud import (
     UnikraftCloudError,
     WaitTimeoutError,
 )
+from unikraft_cloud.api.platform import models
 from unikraft_cloud.resources import instances as instances_module
 
 from .conftest import (
@@ -842,6 +843,30 @@ class TestTimeouts:
         assert sent["connect"] == 10.0
         assert sent["read"] is None
 
+    async def test_a_create_that_prepares_a_template_outlasts_the_preparation(self) -> None:
+        recorder = queued([(200, envelope({"instances": [instance()]}))] * 3)
+        async with client(recorder, metro="fra", timeout=5.0) as ukc:
+            seed = {"name": "worker", "prepare": True, "create_args": {"image": "org/app:v1"}}
+            await ukc.instances.create(template={**seed, "prepare_timeout_s": 120})
+            await ukc.instances.create(template={**seed, "prepare_timeout_s": 120}, timeout_s=30)
+            await ukc.instances.create(template=seed)
+        creates = [call for call in recorder.calls if call.method == "POST"]
+        # The preparation and the wait for running are held one after the other;
+        # a preparation the platform bounds itself is not guessed at.
+        assert [call.extensions["timeout"]["read"] for call in creates] == [130, 160, None]
+
+    async def test_a_wait_of_zero_is_none_and_a_float_or_a_model_is_read_too(self) -> None:
+        recorder = queued([(200, envelope({"instances": [instance()]}))] * 4)
+        async with client(recorder, metro="fra", timeout=5.0) as ukc:
+            await ukc.instances.get(uuid="u1").delete(timeout_seconds=0)
+            await ukc.instances.create(image="org/app:latest", timeout_s=30.0)
+            seed = models.CreateInstanceRequestTemplate(
+                name="worker", prepare=True, prepare_timeout_s=120
+            )
+            await ukc.instances.create(template=seed)
+        reads = [c.extensions["timeout"]["read"] for c in recorder.calls if c.method != "GET"]
+        assert reads == [5.0, 40.0, 130]
+
 
 class TestSummaryPayloads:
     async def test_a_listing_without_details_is_references_only(self) -> None:
@@ -1148,6 +1173,19 @@ class TestCreateFailures:
                 await ukc.instances.create(name="web", image="org/app:latest")
         assert (caught.value.instance.state, caught.value.stop) == ("deleted", None)
         assert str(caught.value).endswith("; it is gone already")
+
+    async def test_a_seed_that_timed_out_preparing_was_not_waiting_to_run(self) -> None:
+        still = {"status": "error", "uuid": "u1", "name": "seed", "state": "starting"}
+        lapsed = envelope({"instances": [still]}, status="error", message="Operation timed out")
+        recorder = queued([(200, lapsed)])
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(WaitTimeoutError) as caught:
+                await ukc.instances.create(
+                    template={"name": "w", "prepare": True, "create_args": {"image": "x"}},
+                    autostart=False,
+                )
+        assert "'running'" not in str(caught.value)
+        assert caught.value.state == "starting"
 
 
 class TestDeleting:
