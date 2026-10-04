@@ -5,9 +5,12 @@ from __future__ import annotations
 
 # `Instances.list` shadows the builtin inside that class body, so annotations
 # there spell the builtin out.
+import asyncio
 import builtins
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from typing import Any, TypeGuard, TypeVar, get_args
+from dataclasses import replace
+from typing import Any, Literal, TypeGuard, TypeVar, get_args, overload
 
 import httpx
 from pydantic import BaseModel
@@ -15,7 +18,7 @@ from pydantic import BaseModel
 from ..api.platform import models
 from ..api.platform.instances_gen import InstancesApi
 from ..core.errors import NotFoundError, ResponseError, UnikraftCloudError, WaitTimeoutError
-from ..core.fanout import fanout
+from ..core.fanout import MetroFanoutError, fanout
 from ..core.handle import HandleSteps, Located, MetroTarget, ResourceHandle
 from ..core.handle_set import HandleSet
 from ..core.http import UNSET, CallOptions, TimeoutOption, comma_separated
@@ -154,6 +157,16 @@ class InstanceHistory(models.GetCheckpointHistoryResponseInstanceHistory):
 #: A staged multi-operation edit of one instance.
 InstanceEditor = ResourceEditor["InstanceHandle[UpdatedInstance]"]
 
+#: How long the first retry of a busy delete waits, and the most any retry waits.
+_BUSY_RETRY_INTERVAL = 0.5
+_BUSY_RETRY_MAX_INTERVAL = 2.0
+#: How the API reports a resource something else still holds: ``EBUSY``, by
+#: its errno name or as the bare Linux value.
+_BUSY = re.compile(r"\bEBUSY\b|Unknown error -16\b")
+
+# Named so tests can stand in for it and assert the backoff without waiting.
+_sleep = asyncio.sleep
+
 
 class InstanceStoppedError(UnikraftCloudError):
     """An instance stopped instead of running.
@@ -193,6 +206,30 @@ class InstanceStoppedError(UnikraftCloudError):
     def stop(self) -> Stop | None:
         """Why it stopped, decoded, when the platform says."""
         return self.instance.stop
+
+
+def _is_busy(err: UnikraftCloudError) -> bool:
+    """Whether a failure says the resource is still in use, and so worth retrying."""
+    messages = [str(err), *(error.message or "" for error in err.errors or ())]
+    return any(_BUSY.search(message) for message in messages)
+
+
+async def _while_busy(attempt: Callable[[], Awaitable[V]], retry_busy: float | None) -> V:
+    """Run ``attempt``, retrying with backoff for ``retry_busy`` seconds while it reports busy."""
+    if retry_busy is None:
+        return await attempt()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + retry_busy
+    interval = _BUSY_RETRY_INTERVAL
+    while True:
+        try:
+            return await attempt()
+        except UnikraftCloudError as err:
+            remaining = deadline - loop.time()
+            if remaining <= 0 or not _is_busy(err):
+                raise
+        await _sleep(min(interval, remaining))
+        interval = min(interval * 2, _BUSY_RETRY_MAX_INTERVAL)
 
 
 def _ref_of(instance: models.Instance) -> Ref:
@@ -267,12 +304,17 @@ def _outlives(
     """A timeout that outlasts a server-side wait of ``seconds``.
 
     The API holds the connection until the instance reaches the state or its own
-    timeout elapses, so a shorter read timeout would cut the wait short.
+    timeout elapses, so a shorter read timeout would cut the wait short. A wait
+    of ``None``, or of less than zero, is one only the API bounds, so the read
+    is unbounded too; a wait of zero is none, so the timeout stands.
     """
     current = timeout if isinstance(timeout, httpx.Timeout) else httpx.Timeout(timeout)
-    if current.read is None:
+    if current.read is None or seconds == 0:
         return timeout
-    read = None if seconds is None else max(current.read, seconds + _WAIT_MARGIN_SECONDS)
+    if seconds is None or seconds < 0:
+        read = None
+    else:
+        read = max(current.read, seconds + _WAIT_MARGIN_SECONDS)
     return httpx.Timeout(connect=current.connect, read=read, write=current.write, pool=current.pool)
 
 
@@ -363,22 +405,88 @@ class InstanceHandle(ResourceHandle[T]):
 
         return self._then(run, opts)
 
+    @overload
     def delete(
         self,
         *,
+        timeout_seconds: int | None = None,
+        retry_busy: float | None = None,
+        missing_ok: Literal[False] = False,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
-    ) -> InstanceHandle[DeletedInstance]:
-        """Delete the instance."""
+    ) -> InstanceHandle[DeletedInstance]: ...
+
+    @overload
+    def delete(
+        self,
+        *,
+        timeout_seconds: int | None = None,
+        retry_busy: float | None = None,
+        missing_ok: Literal[True],
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> InstanceHandle[DeletedInstance | None]: ...
+
+    def delete(
+        self,
+        *,
+        timeout_seconds: int | None = None,
+        retry_busy: float | None = None,
+        missing_ok: bool = False,
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> InstanceHandle[Any]:
+        """Delete the instance, stopping it first if it runs.
+
+        ``timeout_seconds`` blocks until the instance is gone, or for that long;
+        ``-1`` waits for as long as the platform allows. Without it the API
+        answers as soon as the deletion is under way. The read timeout is
+        stretched to outlast the wait only when no ``timeout`` was given, here
+        or to the handle.
+
+        With ``missing_ok`` an instance that is not there -- gone already, or
+        never found -- resolves to ``None`` instead of raising
+        :class:`NotFoundError`.
+
+        ``retry_busy`` keeps trying for that many seconds, backing off in
+        between, while the API reports the instance as busy. Something another
+        instance held on to -- a relay interface, for one -- stays busy for a
+        while after that instance is deleted.
+
+        .. code-block:: python
+
+            await ukc.instances.get(name="web").delete(timeout_seconds=-1)
+            await ukc.instances.get(name="relay").delete(retry_busy=20, missing_ok=True)
+        """
         opts = self._options(headers, base_url, timeout)
+        if timeout_seconds is not None and "timeout" not in opts:
+            opts["timeout"] = _outlives(self._instances.session.platform.timeout, timeout_seconds)
+        extra = {} if timeout_seconds is None else {"timeout_s": timeout_seconds}
 
-        async def run(target: MetroTarget) -> DeletedInstance:
-            body = [models.DeleteInstanceRequestItem.model_validate(ref_dict(target.ref))]
-            res = await self._instances.api.delete_instances(body=body, **at_metro(target, opts))
-            return tag_first(res, _KEY, target, DeletedInstance, "instance")
+        async def attempt(target: MetroTarget) -> DeletedInstance | None:
+            body = [models.DeleteInstanceRequestItem.model_validate(ref_dict(target.ref) | extra)]
+            try:
+                res = await self._instances.api.delete_instances(
+                    body=body, **at_metro(target, opts)
+                )
+                return tag_first(res, _KEY, target, DeletedInstance, "instance")
+            except NotFoundError as err:
+                # The API losing the instance is forgiven; a route that is not there is not.
+                if not missing_ok or not err.absent:
+                    raise
+                return None
 
-        return self._then(run, opts)
+        async def run(target: MetroTarget) -> DeletedInstance | None:
+            return await _while_busy(lambda: attempt(target), retry_busy)
+
+        steps = self._chained(run, opts)
+        if missing_ok:
+            # An instance no metro holds is as gone as one the API just lost.
+            steps = replace(steps, absent=lambda: None)
+        return InstanceHandle(self._instances, steps)
 
     def update(
         self,
@@ -657,8 +765,20 @@ class InstanceSet(HandleSet["InstanceHandle[Instance]", Instance]):
         return await self._map(lambda handle: handle.suspend(**opts))
 
     async def delete(self, **opts: Any) -> list[DeletedInstance]:
-        """Delete every match."""
-        return await self._map(lambda handle: handle.delete(**opts))
+        """Delete every match.
+
+        With ``missing_ok``, a match already gone is left out, and a reference
+        that matches nothing deletes nothing rather than raising.
+        """
+        if opts.get("missing_ok") and await self._absent():
+            return []
+        try:
+            deleted = await self._map(lambda handle: handle.delete(**opts))
+        except MetroFanoutError as err:
+            # The matches already gone are no result of the metros that did delete.
+            err.results = [item for item in err.results if item is not None]
+            raise
+        return [item for item in deleted if item is not None]
 
     async def update(self, **changes: Any) -> list[UpdatedInstance]:
         """Apply the same changes to every match."""
@@ -742,7 +862,7 @@ class Instances(Resource[InstancesApi]):
         # read timeout outlasts it, as it does for `wait()`.
         wait = _create_wait_seconds(spec)
         if wait is not None and "timeout" not in call:
-            call["timeout"] = _outlives(self._session.platform.timeout, wait if wait >= 0 else None)
+            call["timeout"] = _outlives(self._session.platform.timeout, wait)
         opts = scoped(call, metros)
         if spec.get("replicas"):
             raise TypeError(
@@ -920,6 +1040,7 @@ class Instances(Resource[InstancesApi]):
         self,
         refs: RefLike | Sequence[RefLike],
         *,
+        timeout_seconds: int | None = None,
         metros: MetroScope | None = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
@@ -928,16 +1049,22 @@ class Instances(Resource[InstancesApi]):
         """Delete one or more instances.
 
         An instance the API could not delete raises, with the ones it did on the
-        error's ``results``.
+        error's ``results``. ``timeout_seconds`` blocks until they are gone, or
+        for that long; ``-1`` waits for as long as the platform allows. The read
+        timeout is stretched to outlast the wait only when no ``timeout`` was given.
 
         References are located first when the scope spans metros, so each
         instance is deleted only in the metro that holds it.
         """
         opts = scoped(options(headers, base_url, timeout), metros)
+        if timeout_seconds is not None and "timeout" not in opts:
+            opts["timeout"] = _outlives(self._session.platform.timeout, timeout_seconds)
+        extra = {} if timeout_seconds is None else {"timeout_s": timeout_seconds}
 
         def call(group: MetroGroup) -> Awaitable[BaseModel]:
             body = [
-                models.DeleteInstanceRequestItem.model_validate(ref_dict(ref)) for ref in group.refs
+                models.DeleteInstanceRequestItem.model_validate(ref_dict(ref) | extra)
+                for ref in group.refs
             ]
             return self.api.delete_instances(body=body, **self._call(group.endpoint, opts))
 
@@ -1043,7 +1170,10 @@ class Instances(Resource[InstancesApi]):
             )
             try:
                 instance = await self.read(target, opts)
-            except NotFoundError:
+            except NotFoundError as missing:
+                # A route that is not there fails the read like any other failure.
+                if not missing.absent:
+                    return None
                 # Gone between the create's answer and the read.
                 instance = None
             except UnikraftCloudError:

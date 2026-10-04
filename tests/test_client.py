@@ -28,6 +28,7 @@ from unikraft_cloud import (
     UnikraftCloudError,
     WaitTimeoutError,
 )
+from unikraft_cloud.resources import instances as instances_module
 
 from .conftest import (
     Recorder,
@@ -200,6 +201,14 @@ class TestPinnedToOneMetro:
             await ukc.instances.get(name="web").wait(state="running", timeout_seconds=60)
         # The API holds the connection open for the whole wait.
         assert recorder.calls[0].extensions["timeout"]["read"] > 60
+
+    async def test_a_wait_for_as_long_as_the_platform_allows_has_no_read_timeout(self) -> None:
+        waited = {"uuid": "u1", "name": "web", "state": "running"}
+        recorder = queued([(200, envelope({"instances": [waited]}))])
+        async with client(recorder, metro="fra", timeout=5.0) as ukc:
+            await ukc.instances.get(name="web").wait(state="running", timeout_seconds=-1)
+        assert json.loads(recorder.calls[0].content)[0]["timeout_s"] == -1
+        assert recorder.calls[0].extensions["timeout"]["read"] is None
 
     async def test_sends_a_bulk_body_of_references(self) -> None:
         recorder = queued([(200, envelope({"instances": [changed_instance()]}))])
@@ -480,6 +489,14 @@ class TestMissingNames:
             started = await ukc.instances.start([{"name": "a"}])
         assert [inst.metro for inst in started] == ["fra"]
         assert recorder.metros("/v1/instances/start") == ["fra"]
+
+    async def test_a_set_of_a_missing_name_deletes_nothing_when_told_so(self) -> None:
+        recorder = cloud(instances=lambda where: [])
+        async with client(recorder) as ukc:
+            assert await ukc.instances.each(name="ghost").delete(missing_ok=True) == []
+            with pytest.raises(NotFoundError, match="not found in fra, dal"):
+                await ukc.instances.each(name="ghost").delete()
+        assert not [call for call in recorder.calls if call.method == "DELETE"]
 
     async def test_a_lookup_on_one_metro_says_which_name_is_missing(self) -> None:
         recorder = cloud(instances=lambda where: [])
@@ -1055,6 +1072,19 @@ class TestCreateFailures:
         assert str(err).endswith("; it is gone already")
         assert len(recorder.calls) == 2
 
+    async def test_a_read_back_route_that_is_not_there_keeps_the_original_error(self) -> None:
+        failed = {"status": "error", "uuid": "u1", "name": "web", "state": "stopped"}
+        recorder = queued(
+            [
+                (200, envelope({"instances": [failed]}, status="error")),
+                (404, {"status": "error", "message": "no such route"}),
+            ]
+        )
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(UnikraftCloudError) as caught:
+                await ukc.instances.create(name="web", image="org/app:latest")
+        assert not isinstance(caught.value, InstanceStoppedError)
+
     async def test_an_instance_not_stopped_after_all_keeps_the_original_error(self) -> None:
         recorder = self._stopped_create(instance(state="running"))
         async with client(recorder, metro="fra") as ukc:
@@ -1118,3 +1148,182 @@ class TestCreateFailures:
                 await ukc.instances.create(name="web", image="org/app:latest")
         assert (caught.value.instance.state, caught.value.stop) == ("deleted", None)
         assert str(caught.value).endswith("; it is gone already")
+
+
+class TestDeleting:
+    async def test_missing_ok_forgives_no_operation_that_failed_before_it(self) -> None:
+        def route(request: httpx.Request) -> tuple[int, Any]:
+            if request.url.path == "/v1/instances/start":
+                return 200, envelope(
+                    {"instances": [missing(name="ghost")]},
+                    status="error",
+                    message="Failed to perform all operations",
+                )
+            return 200, envelope({"instances": []})
+
+        recorder = routed(route)
+        async with client(recorder, metro="fra") as ukc:
+            # The start's own not-found is the start's failure, not an absence.
+            with pytest.raises(NotFoundError):
+                await ukc.instances.get(name="ghost").start().delete(missing_ok=True)
+        assert [call.method for call in recorder.calls] == ["PUT"]
+
+    async def test_missing_ok_forgives_no_route_that_is_not_there(self) -> None:
+        # A 404 with no item named is the endpoint missing, not the instance.
+        recorder = routed(lambda request: (404, {"status": "error", "message": "no such route"}))
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(NotFoundError):
+                await ukc.instances.get(name="ghost").delete(missing_ok=True)
+
+    async def test_can_wait_for_the_instance_to_be_gone(self) -> None:
+        recorder = queued([(200, envelope({"instances": [changed_instance()]}))])
+        async with client(recorder, metro="fra") as ukc:
+            await ukc.instances.get(uuid="u1").delete(timeout_seconds=-1)
+        assert json.loads(recorder.calls[0].content) == [{"uuid": "u1", "timeout_s": -1}]
+
+    async def test_a_bulk_delete_can_wait_too(self) -> None:
+        recorder = queued([(200, envelope({"instances": [changed_instance()]}))])
+        async with client(recorder, metro="fra") as ukc:
+            await ukc.instances.delete(["web"], timeout_seconds=30)
+        assert json.loads(recorder.calls[0].content) == [{"name": "web", "timeout_s": 30}]
+
+    async def test_a_bounded_wait_lets_the_request_outlast_it(self) -> None:
+        recorder = queued([(200, envelope({"instances": [changed_instance()]}))])
+        async with client(recorder, metro="fra", timeout=5.0) as ukc:
+            await ukc.instances.get(uuid="u1").delete(timeout_seconds=30)
+        assert recorder.calls[0].extensions["timeout"]["read"] == 40.0
+
+    async def test_an_instance_already_gone_is_a_failure_by_default(self) -> None:
+        recorder = queued([(200, envelope({"instances": [missing(uuid="u1")]}, status="error"))])
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(NotFoundError):
+                await ukc.instances.get(uuid="u1").delete()
+
+    async def test_an_instance_already_gone_can_be_no_failure(self) -> None:
+        recorder = queued([(200, envelope({"instances": [missing(uuid="u1")]}, status="error"))])
+        async with client(recorder, metro="fra") as ukc:
+            assert await ukc.instances.get(uuid="u1").delete(missing_ok=True) is None
+        assert len(recorder.calls) == 1
+
+    async def test_a_name_no_metro_holds_can_be_no_failure_either(self) -> None:
+        recorder = cloud(instances=lambda where: [])
+        async with client(recorder) as ukc:
+            assert await ukc.instances.get(name="ghost").delete(missing_ok=True) is None
+        # Located across both metros, found nowhere, and nothing was deleted.
+        assert sorted(recorder.metros("/v1/instances")) == ["dal", "fra"]
+        assert all(call.method == "GET" for call in recorder.calls if call.url.path != "/v1/metros")
+
+    async def test_a_busy_instance_is_retried_with_backoff(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slept: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        monkeypatch.setattr(instances_module, "_sleep", fake_sleep)
+        busy = {"status": "error", "uuid": "u1", "message": "Unknown error -16", "error": 0}
+        recorder = queued(
+            [
+                (200, envelope({"instances": [busy]}, status="error")),
+                (200, envelope({"instances": [busy]}, status="error")),
+                (200, envelope({"instances": [changed_instance()]})),
+            ]
+        )
+        async with client(recorder, metro="fra") as ukc:
+            deleted = await ukc.instances.get(uuid="u1").delete(retry_busy=20)
+        assert deleted.uuid == "u1"
+        assert len(recorder.calls) == 3
+        assert slept == [0.5, 1.0]
+
+    async def test_a_busy_instance_fails_at_once_without_a_retry(self) -> None:
+        busy = {"status": "error", "uuid": "u1", "message": "Failed to delete: EBUSY", "error": 10}
+        recorder = queued([(200, envelope({"instances": [busy]}, status="error"))])
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(UnikraftCloudError, match="EBUSY"):
+                await ukc.instances.get(uuid="u1").delete()
+        assert len(recorder.calls) == 1
+
+    async def test_a_busy_instance_is_given_up_on_at_the_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(instances_module, "_sleep", fake_sleep)
+        busy = {"status": "error", "uuid": "u1", "message": "Unknown error -16", "error": 0}
+        recorder = queued([(200, envelope({"instances": [busy]}, status="error"))])
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(UnikraftCloudError, match="Unknown error -16"):
+                await ukc.instances.get(uuid="u1").delete(retry_busy=0.01)
+        assert len(recorder.calls) > 1
+
+    async def test_any_other_failure_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            raise AssertionError("slept")
+
+        monkeypatch.setattr(instances_module, "_sleep", fake_sleep)
+        recorder = queued([(403, {"status": "error", "message": "denied"})])
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(AuthenticationError):
+                await ukc.instances.get(uuid="u1").delete(retry_busy=20)
+        assert len(recorder.calls) == 1
+
+    async def test_missing_ok_forgives_no_create_that_failed(self) -> None:
+        # The API names the volume as missing, with its own code, but the create failed.
+        failed = missing(name="ghost", noun="volume") | {"name": "web"}
+        recorder = queued([(200, envelope({"instances": [failed]}, status="error"))])
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(NotFoundError):
+                await ukc.instances.create(
+                    image="org/app:latest", volumes=[{"name": "ghost", "at": "/data"}]
+                ).delete(missing_ok=True)
+        assert [call.method for call in recorder.calls] == ["POST"]
+
+    async def test_a_forgiven_absence_is_still_a_not_found_to_a_resolve(self) -> None:
+        recorder = cloud(instances=lambda where: [])
+        async with client(recorder) as ukc:
+            handle = ukc.instances.get(name="ghost").delete(missing_ok=True)
+            assert await handle is None
+            with pytest.raises(NotFoundError):
+                await handle.where()
+            with pytest.raises(NotFoundError):
+                await handle.plugin("sandbox").route()
+
+    async def test_missing_ok_forgives_no_bare_404(self) -> None:
+        recorder = Recorder(lambda request: httpx.Response(404))
+        async with client(recorder, metro="fra") as ukc:
+            with pytest.raises(NotFoundError):
+                await ukc.instances.get(name="ghost").delete(missing_ok=True)
+
+    async def test_a_set_delete_that_partly_failed_reports_no_forgiven_match(self) -> None:
+        def route(request: httpx.Request) -> tuple[int, Any]:
+            if request.url.path == "/v1/metros":
+                return 200, envelope({"metros": METROS})
+            if request.method == "DELETE":
+                if metro_of(request) == "fra":
+                    return 200, envelope({"instances": [missing(name="web")]}, status="error")
+                return 404, {"status": "error", "message": "no such route"}
+            return 200, envelope({"instances": [instance(f"{metro_of(request)}-1", "web")]})
+
+        recorder = routed(route)
+        async with client(recorder) as ukc:
+            with pytest.raises(MetroFanoutError) as caught:
+                await ukc.instances.each(name="web").delete(missing_ok=True)
+        assert caught.value.results == []
+        assert [failure.metro for failure in caught.value.failures] == ["dal"]
+
+    async def test_a_lookup_route_that_is_not_there_is_a_failure_not_an_absence(self) -> None:
+        def route(request: httpx.Request) -> tuple[int, Any]:
+            if request.url.path == "/v1/metros":
+                return 200, envelope({"metros": METROS})
+            return 404, {"status": "error", "message": "no such route"}
+
+        recorder = routed(route)
+        async with client(recorder) as ukc:
+            # Every metro's listing is missing: that is not "no metro holds it".
+            with pytest.raises(MetroFanoutError):
+                await ukc.instances.get(name="ghost").delete(missing_ok=True)
+            with pytest.raises(MetroFanoutError):
+                await ukc.instances.each(name="ghost").delete(missing_ok=True)
+        assert not [call for call in recorder.calls if call.method == "DELETE"]

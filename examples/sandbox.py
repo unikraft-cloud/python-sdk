@@ -65,7 +65,7 @@ async def main(image: str) -> None:
                 size = await sb.fs.read_to("/tmp/hello.txt", local)
                 print(f"downloaded {size} bytes to {local.name}")
         finally:
-            await handle.delete()
+            await handle.delete(timeout_seconds=60, missing_ok=True)
 
 
 if __name__ == "__main__":

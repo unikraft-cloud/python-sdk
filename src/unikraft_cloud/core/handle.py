@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable, Generator, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Generic, TypeVar
 
+from .errors import NotFoundError
 from .http import UNSET, CallOptions, TimeoutOption, Unset
 from .metro import Metro, MetroEndpoint, metro_base_url
 from .response import Ref
@@ -76,6 +77,9 @@ class HandleSteps(Generic[T]):
     #: before a chained `wait()` runs); false for a handle that merely identifies
     #: a resource, which is what keeps `get(ref).suspend()` down to one request.
     sequential: bool = False
+    #: The value when this handle's own lookup finds the resource absent, for an
+    #: operation that accepts absence. Unset, absence raises; other failures always do.
+    absent: Callable[[], T] | None = None
     #: Whether `locate` only reads, so the next await repeats a lookup that
     #: failed. Unset for a create; a chained operation inherits it from its parent.
     lookup: bool = False
@@ -123,7 +127,7 @@ class ResourceHandle(Generic[T]):
     async def resolve(self) -> MetroTarget:
         """The resource's reference and the metro serving it, resolving the scope."""
         self._consumed = True
-        return (await self._locate()).target
+        return (await self._lookup()).target
 
     async def where(self) -> Metro:
         """Which metro holds this resource."""
@@ -143,7 +147,18 @@ class ResourceHandle(Generic[T]):
         self._consumed = True
 
         async def locate() -> Located[R]:
-            return Located(target=_explicit_target(await self._next(), opts))
+            if self._steps.sequential:
+                # A failure of this handle's own operation is never an absence.
+                await self._evaluate()
+            try:
+                located = await self._locate()
+            except NotFoundError as err:
+                # Only a lookup's absence is one: a create's own not-found is
+                # that create's failure, however the API spelled it.
+                if err.absent and self._steps.lookup:
+                    raise _AbsentError(err) from err
+                raise
+            return Located(target=_explicit_target(located.target, opts))
 
         return HandleSteps(
             locate=locate,
@@ -174,7 +189,14 @@ class ResourceHandle(Generic[T]):
         """The target a chained operation should act on, performing this step first."""
         if self._steps.sequential:
             await self._evaluate()
-        return (await self._locate()).target
+        return (await self._lookup()).target
+
+    async def _lookup(self) -> Located[T]:
+        """This handle's lookup, an absence raised as the not-found it was."""
+        try:
+            return await self._locate()
+        except _AbsentError as absence:
+            raise absence.error from absence.error.__cause__
 
     def _locate(self) -> Awaitable[Located[T]]:
         if self._located is None or (self._steps.lookup and spent(self._located)):
@@ -186,7 +208,12 @@ class ResourceHandle(Generic[T]):
         return asyncio.shield(self._located)
 
     async def _evaluate(self) -> T:
-        located = await self._locate()
+        try:
+            located = await self._locate()
+        except _AbsentError as absence:
+            if self._steps.absent is None:
+                raise absence.error from absence.error.__cause__
+            return self._steps.absent()
         if located.value is not None:
             return located.value
         # Memoised apart from the lookup, so a chained operation's one outcome
@@ -196,6 +223,14 @@ class ResourceHandle(Generic[T]):
         if self._value is None or (retried and spent(self._value)):
             self._value = asyncio.ensure_future(self._steps.fetch(located.target))
         return await asyncio.shield(self._value)
+
+
+class _AbsentError(Exception):
+    """A lookup that found the resource absent, which an operation may forgive."""
+
+    def __init__(self, error: NotFoundError) -> None:
+        super().__init__(str(error))
+        self.error = error
 
 
 def spent(task: asyncio.Future[Any] | None) -> bool:

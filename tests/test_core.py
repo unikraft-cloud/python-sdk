@@ -322,11 +322,18 @@ class TestEnvelopes:
 
 
 class TestOrAbsent:
-    async def test_a_404_becomes_absence(self) -> None:
+    async def test_a_resource_found_absent_becomes_none(self) -> None:
         async def missing() -> int:
-            raise NotFoundError("gone", kind="http", status=404)
+            raise NotFoundError("gone", absent=True)
 
         assert await or_absent(missing()) is None
+
+    async def test_a_route_that_is_not_there_is_a_failure(self) -> None:
+        async def unrouted() -> int:
+            raise NotFoundError("no such route", body={"status": "error"})
+
+        with pytest.raises(NotFoundError):
+            await or_absent(unrouted())
 
     async def test_any_other_failure_propagates(self) -> None:
         async def denied() -> int:

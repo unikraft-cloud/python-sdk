@@ -12,6 +12,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Generator
 from typing import Any, Generic, TypeVar
 
+from .errors import NotFoundError
 from .fanout import MetroFailure, MetroFanoutError
 from .handle import ResourceHandle, spent
 from .metro import Metro
@@ -67,6 +68,17 @@ class HandleSet(Generic[H, T]):
     async def size(self) -> int:
         """How many metros hold a match."""
         return len(await self.handles())
+
+    async def _absent(self) -> bool:
+        """Whether the reference matched nothing, for an operation that forgives that."""
+        try:
+            await self.handles()
+        except NotFoundError as err:
+            # Only an absence is forgiven; a route that is not there is a failure.
+            if not err.absent:
+                raise
+            return True
+        return False
 
     def __await__(self) -> Generator[Any, None, list[T]]:
         # Awaitable on purpose, like ResourceHandle: `await each(...)` reads every

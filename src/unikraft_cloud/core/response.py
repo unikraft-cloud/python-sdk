@@ -224,7 +224,11 @@ def _error_for(
     status = next(iter(statuses)) if len(statuses) == 1 else None
     if status is None:
         return UnikraftCloudError(message, kind="http", errors=errors or None, body=res)
-    return error_for_status(status, message, errors=errors, body=res)
+    error = error_for_status(status, message, errors=errors, body=res)
+    if isinstance(error, NotFoundError):
+        # The API's own code says the items are missing, as against a route.
+        error.absent = all(entry.code == NOT_FOUND_CODE for entry in errors)
+    return error
 
 
 def _envelope_errors(res: BaseModel) -> tuple[ResponseError, ...] | None:
@@ -255,7 +259,7 @@ def require_first(entries: Sequence[E], what: str) -> E:
     Most single-resource operations return the resource inside a singleton list.
     """
     if not entries:
-        raise NotFoundError(f"{what} not found", kind="http", status=404)
+        raise NotFoundError(f"{what} not found", absent=True)
     return entries[0]
 
 
@@ -263,12 +267,12 @@ async def or_absent(work: Awaitable[T]) -> T | None:
     """Resolve to ``None`` when a lookup reports the resource is not there.
 
     Searching several metros for one resource means most of them will legitimately
-    answer "not here"; only a real failure should count as a failure.
+    answer "not here"; a route that is not there is a failure, as any other.
     """
     try:
         return await work
-    except UnikraftCloudError as err:
-        if err.status == 404:
+    except NotFoundError as err:
+        if err.absent:
             return None
         raise
 
