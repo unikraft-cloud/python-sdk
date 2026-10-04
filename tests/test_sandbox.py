@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 from typing import Any
 
@@ -519,6 +520,90 @@ class TestFiles:
             with pytest.raises(ValueError, match="one path segment"):
                 await sandbox(ukc).fs.upload("/app", "a/b", b"1")
         assert fake.plugin_paths() == []
+
+
+class TestOutputSinks:
+    async def test_output_is_handed_over_as_it_arrives_and_still_collected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "LOG_CHUNK_SIZE", 4)
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"abcdefgh", stderr=b"E", exits_after_polls=1)
+        seen: list[OutputChunk] = []
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x", on_output=seen.append)
+        assert seen == [
+            OutputChunk("stdout", b"abcd"),
+            OutputChunk("stderr", b"E"),
+            OutputChunk("stdout", b"efgh"),
+        ]
+        assert (result.stdout, result.stderr) == (b"abcdefgh", b"E")
+
+    async def test_a_coroutine_sink_is_awaited_before_the_next_chunk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "LOG_CHUNK_SIZE", 2)
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"abcd", exits_after_polls=1)
+        order: list[str] = []
+
+        async def sink(chunk: OutputChunk) -> None:
+            order.append(f"start {chunk.data.decode()}")
+            await asyncio.sleep(0)
+            order.append(f"end {chunk.data.decode()}")
+
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).exec("x", on_output=sink)
+        assert order == ["start ab", "end ab", "start cd", "end cd"]
+
+    async def test_a_sink_that_returns_a_value_is_fine(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"abcd", exits_after_polls=1)
+        sink = io.BytesIO()
+        async with cloud(fake) as ukc:
+            # A file's write returns the count written; it is no awaitable.
+            result = await sandbox(ukc).exec("x", on_output=lambda chunk: sink.write(chunk.data))
+        assert (sink.getvalue(), result.stdout) == (b"abcd", b"abcd")
+
+    async def test_a_sink_that_raises_fails_the_exec_and_keeps_the_command(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"hello", exits_after_polls=NEVER)
+
+        def sink(chunk: OutputChunk) -> None:
+            raise RuntimeError("sink broke")
+
+        async with cloud(fake) as ukc:
+            with pytest.raises(RuntimeError, match="sink broke"):
+                await sandbox(ukc).exec("x", on_output=sink, timeout=5)
+        assert fake.commands["c1"].running
+
+
+class TestForgetting:
+    async def test_forget_drops_the_command_once_it_ended(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"out", exit_code=3, exits_after_polls=1)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x", forget=True)
+        assert (result.exit_code, result.stdout) == (3, b"out")
+        assert "c1" not in fake.commands
+        assert [c.method for c in fake.recorder.calls if c.method == "DELETE"] == ["DELETE"]
+
+    async def test_an_interrupted_command_that_ended_is_forgotten_too(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("sleep 1000", timeout=0.02, forget=True)
+        assert result.interrupted
+        assert "c1" not in fake.commands
+
+    async def test_a_command_given_up_on_is_kept(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER, heeds_interrupt=False)
+        async with cloud(fake) as ukc:
+            with pytest.raises(ExecTimeoutError):
+                await sandbox(ukc).exec("x", timeout=0.02, wait_delay=0.02, forget=True)
+        assert "c1" in fake.commands
+        assert all(c.method != "DELETE" for c in fake.recorder.calls)
 
 
 class SlowReads(FakeSandbox):

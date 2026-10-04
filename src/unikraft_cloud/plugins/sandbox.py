@@ -12,7 +12,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-from collections.abc import AsyncGenerator, Mapping, Sequence
+import inspect
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal, TypeVar
@@ -40,6 +41,7 @@ __all__ = [
     "ExecResult",
     "ExecTimeoutError",
     "OutputChunk",
+    "OutputSink",
     "OutputStream",
     "PluginNotReadyError",
     "Sandbox",
@@ -117,6 +119,12 @@ class OutputChunk:
     stream: OutputStream
     #: The bytes, decoded from the wire.
     data: bytes
+
+
+#: Where a command's output goes as it arrives: called with each chunk. It may
+#: return an awaitable, awaited before the next chunk is read; any other
+#: return value, such as the count a file's ``write`` reports, is ignored.
+OutputSink = Callable[[OutputChunk], "Awaitable[None] | object | None"]
 
 
 @dataclass(frozen=True)
@@ -304,19 +312,37 @@ class Sandbox:
         stdin: bytes | str | None = None,
         timeout: float | None = None,
         wait_delay: float | None = None,
+        on_output: OutputSink | None = None,
+        forget: bool = False,
     ) -> ExecResult:
         """Run a command to completion and return its output and exit code.
 
         ``cmd`` is a command line for the shell, or an argument vector, as for
         :meth:`run`. A non-zero exit code is reported, not raised. See
-        :meth:`Command.collect` for what ``timeout`` and ``wait_delay`` do.
+        :meth:`Command.collect` for what the other arguments do.
+
+        .. code-block:: python
+
+            result = await sb.exec(
+                "make test",
+                cwd="/app",
+                timeout=600,
+                on_output=lambda chunk: print(chunk.data.decode(errors="replace"), end=""),
+                forget=True,
+            )
         """
         _check_following(timeout, wait_delay)
         # Encoded before the command starts, so a `str` that cannot be is refused first.
         if isinstance(stdin, str):
             stdin = stdin.encode()
         command = await self.run(cmd, cwd=cwd, env=env)
-        return await command.collect(stdin=stdin, timeout=timeout, wait_delay=wait_delay)
+        return await command.collect(
+            stdin=stdin,
+            timeout=timeout,
+            wait_delay=wait_delay,
+            on_output=on_output,
+            forget=forget,
+        )
 
 
 class Command:
@@ -513,12 +539,16 @@ class Command:
         stdin: bytes | str | None = None,
         timeout: float | None = None,
         wait_delay: float | None = None,
+        on_output: OutputSink | None = None,
+        forget: bool = False,
     ) -> ExecResult:
         """Follow the command to its end and return its output and exit code.
 
         ``stdin``, when given, is fed to the command in chunks and then closed.
         A feed that fails ends the collection with its error: a command left
-        waiting for input that never comes might never end.
+        waiting for input that never comes might never end. ``on_output`` is
+        handed each piece of output as it arrives, beside its being collected
+        for the result.
 
         When ``timeout`` elapses the command is interrupted with
         :data:`INTERRUPT_SIGNAL` and then waited for, so a command that heeds
@@ -529,7 +559,13 @@ class Command:
         sent, since nothing would end the command. A command found to have
         ended by itself in the meantime is followed to the end of its output
         instead. ``wait_delay`` needs a ``timeout`` to follow.
-        The command is not deleted afterwards; :meth:`delete` does that.
+
+        ``forget`` drops the plugin's record of the command once it has ended,
+        as :meth:`delete` would; otherwise the record stays until it is deleted.
+        A command still running when the collection gives up is kept either way,
+        and so is one left behind when this call fails or is cancelled: the
+        command runs on in the sandbox, with its record, for the caller to
+        signal or forget.
         """
         _check_following(timeout, wait_delay)
         # Encoded here, so a `str` that cannot be is refused before anything is sent.
@@ -542,6 +578,10 @@ class Command:
             async with contextlib.aclosing(self.stream()) as chunks:
                 async for chunk in chunks:
                     (stdout if chunk.stream == "stdout" else stderr).extend(chunk.data)
+                    if on_output is not None:
+                        handed = on_output(chunk)
+                        if inspect.isawaitable(handed):
+                            await handed
 
         feeder = None if payload is None else asyncio.ensure_future(self.feed_stdin(payload))
         consumer = asyncio.ensure_future(consume())
@@ -572,6 +612,11 @@ class Command:
                 if not task.cancelled():
                     task.exception()
         exit_code = await self._exit_code()
+        if forget:
+            # The command has ended, however it ended, so the record can go. A
+            # refusal to drop it does not fail a collection that succeeded.
+            with contextlib.suppress(UnikraftCloudError):
+                await self.delete()
         return ExecResult(
             uuid=self.uuid,
             exit_code=exit_code,
