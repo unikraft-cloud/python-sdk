@@ -604,6 +604,17 @@ class TestApiSurfaces:
         await api.aclose()
         assert api.platform.instances.http.is_closed
 
+    async def test_an_instance_scoped_plugin_client_shares_the_pool(self) -> None:
+        recorder = queued([(200, envelope())])
+        config = ApiClientConfig(
+            base_url="https://api.fra.unikraft.cloud", transport=recorder.transport
+        )
+        api = Api(config, config.with_base_url("https://cp.example"))
+        scoped = api.plugins.sandbox.for_instance("u1")
+        assert scoped.client.http is api.platform.instances.http
+        await api.aclose()
+        assert scoped.client.http.is_closed
+
 
 class TestClosedClients:
     async def test_a_closed_client_says_so(self) -> None:

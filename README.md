@@ -296,6 +296,16 @@ await ukc.api.controlplane.metros.list_metros()
 
 # Or per resource, alongside its idiomatic client.
 await ukc.instances.api.get_instance_metrics(uuid=["..."])
+
+# An operation that streams events yields each as it arrives.
+async for event in ukc.api.platform.audit.subscribe_audit_events(tags=["prod"]):
+    print(event.type, event.object.uuid if event.object else None)
+
+# An operation that answers with bytes returns them with their status and headers.
+raw = await ukc.api.plugins.sandbox.for_instance(instance_uuid).commands.get_raw_command_log(
+    command_uuid, "stdout", range="bytes=0-1023"
+)
+print(raw.status, raw.byte_range, raw.total_size, raw.content)
 ```
 
 It can also be used on its own, without the idiomatic layer:
@@ -319,8 +329,10 @@ async with PlatformApi(config) as api:
 
 The `api/platform` and `api/controlplane` packages are generated from the OpenAPI
 specification by [`openapi-gen`](https://github.com/unikraft-cloud) using the templates in
-[`templates/`](templates). Everything else is hand-written. Files ending in `_gen.py` are
-never edited by hand.
+[`templates/`](templates). The sandbox plugin's plumbing is generated elsewhere, by
+[plugin-sdk](https://github.com/unikraft-cloud/plugin-sdk) from the plugin's own
+specification, and installed as the `unikraft-cloud-plugin-sandbox-api` package.
+Everything else is hand-written. Files ending in `_gen.py` are never edited by hand.
 
 The templates tell request models from response models by name, after the TypeSpec
 convention `<Verb><Resource>Request*`, and by use: a schema whose name contains
@@ -332,7 +344,7 @@ and a `Request`-named schema that a response also carries fails to parse when th
 leaves a required field out.
 
 ```sh
-make generate    # regenerate both plumbing clients from the specs
+make generate    # regenerate the platform and control-plane plumbing from the specs
 make lint        # ruff check + format --check
 make typecheck   # mypy
 make test        # pytest

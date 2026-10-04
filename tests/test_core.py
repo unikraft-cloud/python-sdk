@@ -83,6 +83,14 @@ class TestMetroUrls:
             "https://api.staging.example.com"
         )
 
+    def test_drops_the_v1_whatever_its_case_or_what_comes_before_it(self) -> None:
+        assert metro_base_url("HTTPS://api.staging.example.com/V1") == (
+            "HTTPS://api.staging.example.com"
+        )
+        assert metro_base_url("https://proxy.example.com/ukc/v1/") == (
+            "https://proxy.example.com/ukc"
+        )
+
 
 def session(handler: Callable[[httpx.Request], Coroutine[None, None, httpx.Response]]) -> Session:
     """A session whose control plane answers through `handler`."""

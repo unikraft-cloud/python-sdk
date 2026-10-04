@@ -87,7 +87,8 @@ class UnikraftCloud(Scope):
     discovery.
 
     The raw, spec-shaped API stays available on :attr:`api`, and from
-    ``unikraft_cloud.api.platform`` and ``unikraft_cloud.api.controlplane``.
+    ``unikraft_cloud.api.platform``, ``unikraft_cloud.api.controlplane`` and
+    ``unikraft_cloud.api.plugins``.
 
     The client owns a connection pool, so close it when you are done -- either with
     ``async with`` or by awaiting :meth:`aclose`.
@@ -203,8 +204,8 @@ class UnikraftCloud(Scope):
         super().__init__(session, _default_scope(metros, chosen_metro))
 
         #: The raw ("plumbing") API surfaces: ``api.platform`` (metro-scoped,
-        #: pointing at the default metro unless a call passes ``base_url``) and
-        #: ``api.controlplane``.
+        #: pointing at the default metro unless a call passes ``base_url``),
+        #: ``api.controlplane`` and ``api.plugins``.
         self.api = Api(platform, control_plane)
         self._metro_clients: dict[str, MetroClient] = {}
 

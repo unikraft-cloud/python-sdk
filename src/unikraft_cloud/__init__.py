@@ -4,13 +4,13 @@
 """Official Python SDK for the Unikraft Cloud Platform API.
 
 The idiomatic client is :class:`UnikraftCloud`. The raw, spec-shaped API stays
-available on ``ukc.api`` and from ``unikraft_cloud.api.platform`` and
-``unikraft_cloud.api.controlplane``.
+available on ``ukc.api`` and from ``unikraft_cloud.api.platform``,
+``unikraft_cloud.api.controlplane`` and ``unikraft_cloud.api.plugins``.
 """
 
 from __future__ import annotations
 
-from .api import Api, ControlPlaneApi, PlatformApi
+from .api import Api, ControlPlaneApi, PlatformApi, PluginsApi, SandboxApi
 from .client import USER_AGENT, MetroClient, Scope, UnikraftCloud
 from .core.errors import (
     AlreadyExistsError,
@@ -159,6 +159,7 @@ __all__ = [
     "PatchItem",
     "PatchOp",
     "PlatformApi",
+    "PluginsApi",
     "Quotas",
     "RateLimitError",
     "RawResponse",
@@ -169,6 +170,7 @@ __all__ = [
     "ResourceEditor",
     "ResourceHandle",
     "ResponseError",
+    "SandboxApi",
     "Scope",
     "ScopeOptions",
     "ServerError",

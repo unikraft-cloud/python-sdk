@@ -111,8 +111,9 @@ class ApiClientConfig:
         return replace(self, base_url=base_url)
 
 
-#: The API version prefix the generated operation paths already carry.
-_API_VERSION = re.compile(r"/v1$")
+#: The API version prefix the generated operation paths already carry, at the
+#: end of a base URL, unless it is a plugin's name at the end of its route.
+_API_VERSION = re.compile(r"(?<!/plugins)/v1$", re.IGNORECASE)
 
 
 def normalise_base_url(base_url: str) -> str:
@@ -120,7 +121,8 @@ def normalise_base_url(base_url: str) -> str:
 
     Those paths already carry the ``/v1`` prefix, so a trailing ``/v1`` -- which
     is how the control plane reports a metro endpoint -- is dropped rather than
-    duplicated into ``/v1/v1/...``.
+    doubled into ``/v1/v1/...``. A plugin named so keeps it at the end of its
+    route.
     """
     return _API_VERSION.sub("", base_url.rstrip("/"))
 
