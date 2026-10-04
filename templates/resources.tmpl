@@ -279,9 +279,9 @@ class {{ pascalcase $tag }}Api(ApiClient):
 {{- end -}}
 {{- end -}}
 {{- /* Every parameter is an argument of one signature, so each must render a
-       valid identifier that no other parameter, the body, self or a call
-       option takes. */ -}}
-{{- $idents := list "self" "headers" "base_url" "timeout" -}}
+       valid identifier that no other parameter, the body, self, a call option
+       or a name the method body uses takes. */ -}}
+{{- $idents := list "self" "headers" "base_url" "timeout" "comma_separated" "dict" "models" "quote" "request_headers" "str" "_text" -}}
 {{- if $bodyRef -}}{{- $idents = append $idents "body" -}}{{- end -}}
 {{- range pathParameters . -}}
 {{- $ident := pySafeName .Name -}}

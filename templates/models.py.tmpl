@@ -8,14 +8,18 @@
   evaluated on the spot, unlike an annotation, so what it names must already
   exist -- and a rebuild pass once every name does. */ -}}
 {{- /* A schema name is rendered as it is, in its declaration and in every
-  reference, so it must be an identifier that nothing in the module takes. */ -}}
+  reference, so it must be an identifier that nothing in the module takes: an
+  import, a type the annotations name, or the loop variable of the rebuild. */ -}}
+{{- $moduleNames := list "Any" "BaseModel" "ConfigDict" "Field" "Literal" "annotations" "bool" "datetime" "dict" "float" "int" "list" "str" }}
+{{- $schemaNames := list }}
+{{- range $m := .Models }}{{ $schemaNames = append $schemaNames $m.SchemaName }}{{ end }}
 {{- range $m := .Models }}
 {{- $name := $m.SchemaName }}
 {{- if or (not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $name)) (ne (pySafeName $name) $name) }}
 {{- fail (printf "schema %q cannot name a Python class; rename it in the specification" $name) }}
 {{- end }}
-{{- if has $name (list "Any" "BaseModel" "ConfigDict" "Field" "Literal" "annotations" "datetime") }}
-{{- fail (printf "schema %q has the name of an import of the models module; rename it in the specification" $name) }}
+{{- if or (has $name $moduleNames) (eq $name "_model") }}
+{{- fail (printf "schema %q has a name that the models module takes; rename it in the specification" $name) }}
 {{- end }}
 {{- end }}
 --- models_gen.py
@@ -90,6 +94,10 @@ class {{ $name }}(BaseModel):
   first version shadow a field with a warning, so both are spelled apart. */ -}}
 {{- if hasPrefix "model_" $safe }}{{ $safe = printf "field_%s" $safe }}{{ end }}
 {{- if has $safe (list "construct" "copy" "dict" "from_orm" "json" "parse_file" "parse_obj" "parse_raw" "schema" "schema_json" "update_forward_refs" "validate") }}{{ $safe = printf "%s_" $safe }}{{ end }}
+{{- /* A field with a default is an attribute of the class body, where the
+  annotations and defaults of later fields are resolved, so it may not take a
+  name that they use. */ -}}
+{{- if or (has $safe (list "Any" "Field" "Literal" "bool" "datetime" "dict" "float" "int" "list" "str")) (has $safe $schemaNames) }}{{ $safe = printf "%s_" $safe }}{{ end }}
 {{- if has $safe $fields }}
 {{- fail (printf "property %q of %s renders the field %s, which another property renders too; rename one of them in the specification" $prop $name $safe) }}
 {{- end }}
