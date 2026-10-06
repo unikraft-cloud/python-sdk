@@ -1,6 +1,6 @@
 [project]
 name = "unikraft-cloud"
-version = "0.1.0"
+version = "0.2.0"
 description = "Official Python SDK for the Unikraft Cloud Platform API"
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -18,6 +18,8 @@ classifiers = [
 dependencies = [
   "httpx>=0.27",
   "pydantic>=2.7",
+  # The sandbox plugin's plumbing, generated from its specification by plugin-sdk.
+  "unikraft-cloud-plugin-sandbox-api>=1.1.0,<2",
 ]
 
 [project.urls]
@@ -49,7 +51,7 @@ select = ["B", "E", "F", "I", "N", "RUF", "SIM", "UP", "W"]
 # layout is the generator's, and the docstrings are the specification's prose
 # verbatim -- including the odd non-ASCII character, which is not ours to edit.
 [tool.ruff.lint.per-file-ignores]
-"src/unikraft_cloud/api/**" = ["E501", "F401", "N803", "N815", "RUF001", "RUF012"]
+"src/unikraft_cloud/api/**" = ["E501", "N803", "N815", "RUF001", "RUF012"]
 
 [tool.mypy]
 # The plugin understands populate_by_name, so a generated model can be built

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 from urllib.parse import quote
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
@@ -11,7 +10,7 @@ from . import models_gen as models
 
 
 class CertificatesApi(ApiClient):
-    """Low-level "plumbing" client for the `Certificates` resource.
+    """Low-level "plumbing" client for the `certificates` resource.
 
     Methods mirror the OpenAPI specification and return the raw response
     envelope. The idiomatic clients are built on top of this.
@@ -26,7 +25,7 @@ class CertificatesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.CreateCertificateResponse:
         """Create Certificate"""
-        return await self._request(
+        return await self.request(
             models.CreateCertificateResponse,
             method="POST",
             path="/v1/certificates",
@@ -45,7 +44,7 @@ class CertificatesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteCertificatesResponse:
         """Delete Certificate by UUID"""
-        return await self._request(
+        return await self.request(
             models.DeleteCertificatesResponse,
             method="DELETE",
             path=f"/v1/certificates/{quote(uuid, safe='')}",
@@ -63,7 +62,7 @@ class CertificatesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteCertificatesResponse:
         """Delete Certificates"""
-        return await self._request(
+        return await self.request(
             models.DeleteCertificatesResponse,
             method="DELETE",
             path="/v1/certificates",
@@ -82,7 +81,7 @@ class CertificatesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetCertificatesResponse:
         """Get Certificate by UUID"""
-        return await self._request(
+        return await self.request(
             models.GetCertificatesResponse,
             method="GET",
             path=f"/v1/certificates/{quote(uuid, safe='')}",
@@ -106,7 +105,7 @@ class CertificatesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetCertificatesResponse:
         """List Certificates"""
-        return await self._request(
+        return await self.request(
             models.GetCertificatesResponse,
             method="GET",
             path="/v1/certificates",
@@ -134,7 +133,7 @@ class CertificatesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateCertificatesResponse:
         """Update Certificate by UUID"""
-        return await self._request(
+        return await self.request(
             models.UpdateCertificatesResponse,
             method="PUT",
             path=f"/v1/certificates/{quote(uuid, safe='')}",
@@ -153,7 +152,7 @@ class CertificatesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateCertificatesResponse:
         """Update Certificates"""
-        return await self._request(
+        return await self.request(
             models.UpdateCertificatesResponse,
             method="PUT",
             path="/v1/certificates",

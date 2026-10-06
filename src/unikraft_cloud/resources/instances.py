@@ -5,17 +5,20 @@ from __future__ import annotations
 
 # `Instances.list` shadows the builtin inside that class body, so annotations
 # there spell the builtin out.
+import asyncio
 import builtins
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from typing import Any, TypeVar, get_args
+from dataclasses import replace
+from typing import Any, Literal, TypeGuard, TypeVar, get_args, overload
 
 import httpx
 from pydantic import BaseModel
 
 from ..api.platform import models
 from ..api.platform.instances_gen import InstancesApi
-from ..core.errors import WaitTimeoutError
-from ..core.fanout import fanout
+from ..core.errors import NotFoundError, ResponseError, UnikraftCloudError, WaitTimeoutError
+from ..core.fanout import MetroFanoutError, fanout, fanout_collect
 from ..core.handle import HandleSteps, Located, MetroTarget, ResourceHandle
 from ..core.handle_set import HandleSet
 from ..core.http import UNSET, CallOptions, TimeoutOption, comma_separated
@@ -33,6 +36,8 @@ from ..core.resource import (
 )
 from ..core.response import Ref, RefLike, describe_ref, matched_entries, or_absent
 from ..core.session import Session
+from ..plugins import Plugin, ResolvedInstance
+from ..plugins.sandbox import PLUGIN_NAME, Sandbox
 from ._shared import (
     at_metro,
     filter_of,
@@ -43,6 +48,7 @@ from ._shared import (
     scoped,
     tag_first,
 )
+from .stop import Stop, StopReason
 
 __all__ = [
     "DeletedInstance",
@@ -53,6 +59,7 @@ __all__ = [
     "InstanceLogs",
     "InstanceMetrics",
     "InstanceSet",
+    "InstanceStoppedError",
     "Instances",
     "StartedInstance",
     "StoppedInstance",
@@ -64,7 +71,6 @@ __all__ = [
 #: What a handle resolves to, which is not always a single model: `history`
 #: resolves to a list of them.
 T = TypeVar("T")
-#: A tagged model an operation reports.
 #: What a chained operation resolves to, model or list of them.
 V = TypeVar("V")
 
@@ -79,6 +85,18 @@ class Instance(models.Instance):
     """An instance (a microVM), tagged with the metro that served it."""
 
     metro: str
+
+    @property
+    def stop(self) -> Stop | None:
+        """Why the instance stopped, decoded; ``None`` while the API reports no reason."""
+        if self.stop_reason is None:
+            return None
+        return Stop(StopReason(self.stop_reason), self.stop_code)
+
+    def describe_stop(self) -> str:
+        """Why the instance stopped, in words; empty while the API reports no reason."""
+        stop = self.stop
+        return "" if stop is None else str(stop)
 
 
 class StartedInstance(models.StartInstancesResponseStartedInstance):
@@ -138,42 +156,184 @@ class InstanceHistory(models.GetCheckpointHistoryResponseInstanceHistory):
 #: A staged multi-operation edit of one instance.
 InstanceEditor = ResourceEditor["InstanceHandle[UpdatedInstance]"]
 
+#: How long the first retry of a busy delete waits, and the most any retry waits.
+_BUSY_RETRY_INTERVAL = 0.5
+_BUSY_RETRY_MAX_INTERVAL = 2.0
+#: How the API reports a resource something else still holds: ``EBUSY``, by
+#: its errno name or as the bare Linux value.
+_BUSY = re.compile(r"\bEBUSY\b|Unknown error -16\b")
+
+# Named so tests can stand in for it and assert the backoff without waiting.
+_sleep = asyncio.sleep
+
+
+class InstanceStoppedError(UnikraftCloudError):
+    """An instance stopped instead of running.
+
+    :meth:`Instances.create` raises this when the instance it made stopped
+    before it was running -- a node could not pull its image, say, or its kernel
+    crashed. The instance is read back so that the reason travels with the
+    error, and it is left as it is: read its console log, or delete it. One
+    gone already -- deleted on stop, say -- is described from the failed item
+    alone, with no reason to give.
+
+    .. code-block:: python
+
+        try:
+            web = await fra.instances.create(image="org/app:latest", autostart=True, timeout_s=30)
+        except InstanceStoppedError as err:
+            print(err.stop)  # e.g. "platform stop: image pull failed"
+            await fra.instances.get(uuid=err.instance.uuid).delete()
+    """
+
+    #: The instance, as it was read after it stopped, or as the failed item
+    #: described it when it was gone already.
+    instance: Instance
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        instance: Instance,
+        errors: tuple[ResponseError, ...] | None = None,
+        body: Any = None,
+    ) -> None:
+        super().__init__(message, kind="http", errors=errors, body=body)
+        self.instance = instance
+
+    @property
+    def stop(self) -> Stop | None:
+        """Why it stopped, decoded, when the platform says."""
+        return self.instance.stop
+
+
+def _is_busy(err: UnikraftCloudError) -> bool:
+    """Whether a failure says the resource is still in use, and so worth retrying."""
+    messages = [str(err), *(error.message or "" for error in err.errors or ())]
+    return any(_BUSY.search(message) for message in messages)
+
+
+async def _while_busy(attempt: Callable[[], Awaitable[V]], retry_busy: float | None) -> V:
+    """Run ``attempt``, retrying with backoff for ``retry_busy`` seconds while it reports busy."""
+    if retry_busy is None:
+        return await attempt()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + retry_busy
+    interval = _BUSY_RETRY_INTERVAL
+    while True:
+        try:
+            return await attempt()
+        except UnikraftCloudError as err:
+            remaining = deadline - loop.time()
+            if remaining <= 0 or not _is_busy(err):
+                raise
+        await _sleep(min(interval, remaining))
+        interval = min(interval * 2, _BUSY_RETRY_MAX_INTERVAL)
+
+
+def _ref_of(instance: models.Instance) -> Ref:
+    """The reference to address an instance the API reported by, its UUID first."""
+    return Ref(uuid=instance.uuid) if instance.uuid else Ref(name=instance.name)
+
 
 def _timed_out(res: BaseModel, wanted: str | None) -> None:
     """Report a wait that ran out of time as a timeout, not as any old failure.
 
     The API answers a lapsed wait with an error envelope that still carries the
-    state it last saw, which is what a caller wants to know.
+    state it last saw, which is what a caller wants to know, and names the
+    instances, which travel on ``errors``: a create whose wait lapsed still
+    hands over the instance it made.
     """
     message = getattr(res, "message", None)
     if getattr(res, "status", None) != "error" or not isinstance(message, str):
         return
     if "timed out" not in message.lower():
         return
+    state = _first_state(res)
     entries = getattr(getattr(res, "data", None), _KEY, None) or []
-    state = next((getattr(entry, "state", None) for entry in entries), None)
+    errors = tuple(
+        ResponseError(
+            uuid=getattr(entry, "uuid", None),
+            name=getattr(entry, "name", None),
+            state=getattr(entry, "state", None),
+        )
+        for entry in entries
+    )
     error = WaitTimeoutError(
         f"Timed out waiting for the instance{f' to be {wanted!r}' if wanted else ''}"
         f"{f'; it is {state!r}.' if state else '.'}",
         kind="http",
+        errors=errors or None,
         body=res,
     )
     error.state = state
     raise error
 
 
+def _first_state(res: BaseModel) -> str | None:
+    """The state the first reported item is in, when the response names one."""
+    entries = getattr(getattr(res, "data", None), _KEY, None) or []
+    return next((getattr(entry, "state", None) for entry in entries), None)
+
+
+def _create_wait_seconds(spec: Mapping[str, Any]) -> float | None:
+    """How long a create asks the API to hold the connection, in seconds.
+
+    ``timeout_s`` is the wait for the instance to run; the deprecated
+    ``wait_timeout_ms`` is read when it is the only one given, rounded up to
+    whole seconds. A template prepared on the way adds ``prepare_timeout_s``,
+    or a wait the API bounds itself when none was given. ``None`` is a create
+    that does not wait; less than zero, one that waits as long as the API lets it.
+    """
+    seconds = _run_wait_seconds(spec)
+    template = spec.get("template")
+    if template is None or not _field_of(template, "prepare"):
+        return seconds
+    prepare = _field_of(template, "prepare_timeout_s")
+    if not _is_number(prepare) or prepare <= 0:
+        return -1
+    if seconds is None:
+        return prepare
+    return -1 if seconds < 0 else seconds + prepare
+
+
+def _run_wait_seconds(spec: Mapping[str, Any]) -> float | None:
+    seconds = spec.get("timeout_s")
+    if _is_number(seconds):
+        return seconds
+    millis = spec.get("wait_timeout_ms")
+    if _is_number(millis):
+        return -(-millis // 1000) if millis >= 0 else -1
+    return None
+
+
+def _is_number(value: Any) -> TypeGuard[float]:
+    """Whether a value is a number the API takes as seconds; a bool is none."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _field_of(spec: Any, name: str) -> Any:
+    """A field of a specification given as a mapping or as a model."""
+    return spec.get(name) if isinstance(spec, Mapping) else getattr(spec, name, None)
+
+
 def _outlives(
-    timeout: float | httpx.Timeout | None, seconds: int | None
+    timeout: float | httpx.Timeout | None, seconds: float | None
 ) -> float | httpx.Timeout | None:
     """A timeout that outlasts a server-side wait of ``seconds``.
 
     The API holds the connection until the instance reaches the state or its own
-    timeout elapses, so a shorter read timeout would cut the wait short.
+    timeout elapses, so a shorter read timeout would cut the wait short. A wait
+    of ``None``, or of less than zero, is one only the API bounds, so the read
+    is unbounded too; a wait of zero is none, so the timeout stands.
     """
     current = timeout if isinstance(timeout, httpx.Timeout) else httpx.Timeout(timeout)
-    if current.read is None:
+    if current.read is None or seconds == 0:
         return timeout
-    read = None if seconds is None else max(current.read, seconds + _WAIT_MARGIN_SECONDS)
+    if seconds is None or seconds < 0:
+        read = None
+    else:
+        read = max(current.read, seconds + _WAIT_MARGIN_SECONDS)
     return httpx.Timeout(connect=current.connect, read=read, write=current.write, pool=current.pool)
 
 
@@ -264,22 +424,88 @@ class InstanceHandle(ResourceHandle[T]):
 
         return self._then(run, opts)
 
+    @overload
     def delete(
         self,
         *,
+        timeout_seconds: int | None = None,
+        retry_busy: float | None = None,
+        missing_ok: Literal[False] = False,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
-    ) -> InstanceHandle[DeletedInstance]:
-        """Delete the instance."""
+    ) -> InstanceHandle[DeletedInstance]: ...
+
+    @overload
+    def delete(
+        self,
+        *,
+        timeout_seconds: int | None = None,
+        retry_busy: float | None = None,
+        missing_ok: Literal[True],
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> InstanceHandle[DeletedInstance | None]: ...
+
+    def delete(
+        self,
+        *,
+        timeout_seconds: int | None = None,
+        retry_busy: float | None = None,
+        missing_ok: bool = False,
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> InstanceHandle[Any]:
+        """Delete the instance, stopping it first if it runs.
+
+        ``timeout_seconds`` blocks until the instance is gone, or for that long;
+        ``-1`` waits for as long as the platform allows. Without it the API
+        answers as soon as the deletion is under way. The read timeout is
+        stretched to outlast the wait only when no ``timeout`` was given, here
+        or to the handle.
+
+        With ``missing_ok`` an instance that is not there -- gone already, or
+        never found -- resolves to ``None`` instead of raising
+        :class:`NotFoundError`.
+
+        ``retry_busy`` keeps trying for that many seconds, backing off in
+        between, while the API reports the instance as busy. Something another
+        instance held on to -- a relay interface, for one -- stays busy for a
+        while after that instance is deleted.
+
+        .. code-block:: python
+
+            await ukc.instances.get(name="web").delete(timeout_seconds=-1)
+            await ukc.instances.get(name="relay").delete(retry_busy=20, missing_ok=True)
+        """
         opts = self._options(headers, base_url, timeout)
+        if timeout_seconds is not None and "timeout" not in opts:
+            opts["timeout"] = _outlives(self._instances.session.platform.timeout, timeout_seconds)
+        extra = {} if timeout_seconds is None else {"timeout_s": timeout_seconds}
 
-        async def run(target: MetroTarget) -> DeletedInstance:
-            body = [models.DeleteInstanceRequestItem.model_validate(ref_dict(target.ref))]
-            res = await self._instances.api.delete_instances(body=body, **at_metro(target, opts))
-            return tag_first(res, _KEY, target, DeletedInstance, "instance")
+        async def attempt(target: MetroTarget) -> DeletedInstance | None:
+            body = [models.DeleteInstanceRequestItem.model_validate(ref_dict(target.ref) | extra)]
+            try:
+                res = await self._instances.api.delete_instances(
+                    body=body, **at_metro(target, opts)
+                )
+                return tag_first(res, _KEY, target, DeletedInstance, "instance")
+            except NotFoundError as err:
+                # The API losing the instance is forgiven; a route that is not there is not.
+                if not missing_ok or not err.absent:
+                    raise
+                return None
 
-        return self._then(run, opts)
+        async def run(target: MetroTarget) -> DeletedInstance | None:
+            return await _while_busy(lambda: attempt(target), retry_busy)
+
+        steps = self._chained(run, opts)
+        if missing_ok:
+            # An instance no metro holds is as gone as one the API just lost.
+            steps = replace(steps, absent=lambda: None)
+        return InstanceHandle(self._instances, steps)
 
     def update(
         self,
@@ -374,7 +600,8 @@ class InstanceHandle(ResourceHandle[T]):
         """Block until the instance reaches a state, and report what the API observed.
 
         The API fails the request if its own timeout elapses first, so this raises
-        rather than returning.
+        rather than returning. The read timeout is stretched to outlast the wait
+        only when no ``timeout`` was given, here or to the handle.
         """
         opts = self._options(headers, base_url, timeout)
         if "timeout" not in opts:
@@ -475,6 +702,59 @@ class InstanceHandle(ResourceHandle[T]):
         """Chain another operation onto this handle."""
         return InstanceHandle(self._instances, self._chained(fetch, opts))
 
+    def plugin(self, name: str) -> Plugin:
+        """A plugin attached to the instance, addressed lazily.
+
+        Nothing is sent until the plugin's route is needed. Resolving it runs
+        this handle's own operation first, if it is one, and reads the instance
+        only when its UUID is not yet known: a UUID reference, a located or
+        created instance, and a waited-for instance all already know it.
+
+        .. code-block:: python
+
+            route = await ukc.instances.get(name="web").plugin("sandbox").route()
+        """
+
+        async def resolve() -> ResolvedInstance:
+            target = await self._next()
+            held: object = (await self._locate()).value
+            value = self._value
+            if (
+                held is None
+                and value is not None
+                and value.done()
+                and not value.cancelled()
+                and value.exception() is None
+            ):
+                held = value.result()
+            uuid = target.ref.uuid
+            if uuid is None:
+                known = getattr(held, "uuid", None)
+                if isinstance(known, str) and known:
+                    uuid = known
+            return ResolvedInstance(
+                target=target,
+                uuid=uuid,
+                instance=held if isinstance(held, Instance) else None,
+            )
+
+        # Addressing a plugin consumes the handle the way chaining does: it is
+        # the plugin that will send something, not this handle.
+        self._consumed = True
+        return self._instances._plugin(name, resolve)
+
+    def sandbox(self, *, plugin: str = PLUGIN_NAME) -> Sandbox:
+        """The sandbox plugin on the instance: commands and files inside it.
+
+        ``plugin`` names the plugin when it was attached under another name.
+
+        .. code-block:: python
+
+            sb = ukc.metro("fra").instances.get(uuid=uuid).sandbox()
+            result = await sb.exec("uname -a")
+        """
+        return Sandbox(self.plugin(plugin))
+
 
 class InstanceSet(HandleSet["InstanceHandle[Instance]", Instance]):
     """Every instance matching one reference, one per metro that holds it.
@@ -505,8 +785,20 @@ class InstanceSet(HandleSet["InstanceHandle[Instance]", Instance]):
         return await self._map(lambda handle: handle.suspend(**opts))
 
     async def delete(self, **opts: Any) -> list[DeletedInstance]:
-        """Delete every match."""
-        return await self._map(lambda handle: handle.delete(**opts))
+        """Delete every match.
+
+        With ``missing_ok``, a match already gone is left out, and a reference
+        that matches nothing deletes nothing rather than raising.
+        """
+        if opts.get("missing_ok") and await self._absent():
+            return []
+        try:
+            deleted = await self._map(lambda handle: handle.delete(**opts))
+        except MetroFanoutError as err:
+            # The matches already gone are no result of the metros that did delete.
+            err.results = [item for item in err.results if item is not None]
+            raise
+        return [item for item in deleted if item is not None]
 
     async def update(self, **changes: Any) -> list[UpdatedInstance]:
         """Apply the same changes to every match."""
@@ -551,6 +843,15 @@ class Instances(Resource[InstancesApi]):
     def __init__(self, session: Session, scope: MetroScope) -> None:
         super().__init__(session, scope, InstancesApi(session.platform))
 
+    def _plugin(self, name: str, resolve: Callable[[], Awaitable[ResolvedInstance]]) -> Plugin:
+        """A plugin on the instance a handle resolves to. Used by :class:`InstanceHandle`."""
+        return Plugin(
+            name,
+            resolve=resolve,
+            read=lambda target: self.read(target, {}),
+            config=self._session.platform,
+        )
+
     def create(
         self,
         *,
@@ -575,8 +876,14 @@ class Instances(Resource[InstancesApi]):
             )
         """
         call = options(headers, base_url, timeout)
-        opts = scoped(call, metros)
         check_spec(spec, models.CreateInstanceRequest, self.noun)
+        # A create that waits for the instance to run, or prepares a template on
+        # the way, holds the connection that long, so the read timeout outlasts
+        # it, as it does for `wait()`.
+        wait = _create_wait_seconds(spec)
+        if wait is not None and "timeout" not in call:
+            call["timeout"] = _outlives(self._session.platform.timeout, wait)
+        opts = scoped(call, metros)
         if spec.get("replicas"):
             raise TypeError(
                 "`replicas` creates several instances, and this returns a handle to one. "
@@ -588,9 +895,21 @@ class Instances(Resource[InstancesApi]):
         async def created() -> Located[Instance]:
             endpoint = await self._one_endpoint("Creating an instance", opts)
             res = await self.api.create_instance(body=body, **self._call(endpoint, opts))
-            instance = first_tagged(res, _KEY, endpoint.metro, Instance, "instance")
-            ref = Ref(uuid=instance.uuid) if instance.uuid else Ref(name=instance.name)
-            target = MetroTarget(metro=endpoint.metro, base_url=endpoint.base_url, ref=ref)
+            # A create that waited for the instance to run reports a lapsed wait
+            # the way `wait` does; an instance that stopped, whatever the
+            # message says, is a failed item read for its stop below.
+            if wait is not None and _first_state(res) not in ("stopped", "deleted"):
+                _timed_out(res, "running" if _run_wait_seconds(spec) is not None else None)
+            try:
+                instance = first_tagged(res, _KEY, endpoint.metro, Instance, "instance")
+            except UnikraftCloudError as err:
+                stopped = await self._stopped(err, endpoint, opts)
+                if stopped is None:
+                    raise
+                raise stopped from err
+            target = MetroTarget(
+                metro=endpoint.metro, base_url=endpoint.base_url, ref=_ref_of(instance)
+            )
             # A create reports less than a read does, so the handle reads the
             # instance rather than carrying the create's answer forward.
             return Located(target=target)
@@ -639,6 +958,7 @@ class Instances(Resource[InstancesApi]):
                 fetch=lambda target: self.read(target, opts),
                 what=f"instance {describe_ref(ref)}",
                 options=call,
+                lookup=True,
             ),
         )
 
@@ -647,25 +967,38 @@ class Instances(Resource[InstancesApi]):
         *,
         uuid: str | None = None,
         name: str | None = None,
+        tags: Sequence[str] | None = None,
         metro: str | None = None,
         metros: MetroScope | None = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
     ) -> InstanceSet:
-        """Reference every instance matching a name -- one per metro that holds it.
+        """Reference every instance matching a name, or every instance carrying some tags.
 
         A name can exist in several metros at once; this addresses all of them,
-        where :meth:`get` insists you pick one.
+        one per metro that holds it, where :meth:`get` insists you pick one.
+
+        ``tags`` instead selects every instance in scope carrying all of them,
+        however many a metro holds. Tags that select nothing are an empty set
+        rather than a failure, so a cleanup can run again.
 
         .. code-block:: python
 
             await ukc.instances.each(name="web").suspend()  # in every metro
             [inst.metro for inst in await ukc.instances.each(name="web")]
+            await ukc.instances.each(tags=["job=1234"]).delete(missing_ok=True)
         """
-        ref = Ref(uuid=uuid, name=name, metro=metro)
         call = options(headers, base_url, timeout)
         opts = scoped(call, metros)
+        if tags is not None:
+            if uuid is not None or name is not None or metro is not None:
+                raise TypeError(
+                    "`tags` selects instances on its own: drop `uuid`, `name` and `metro`, "
+                    "or narrow the metros with `metros`."
+                )
+            return self._tagged(list(tags), call, opts)
+        ref = Ref(uuid=uuid, name=name, metro=metro)
 
         async def locate() -> builtins.list[InstanceHandle[Instance]]:
             located = await self._locate_all(
@@ -686,6 +1019,56 @@ class Instances(Resource[InstancesApi]):
             ]
 
         return InstanceSet(locate, f"instance {describe_ref(ref)}")
+
+    def _tagged(
+        self, tags: builtins.list[str], call: CallOptions, opts: ScopeOptions
+    ) -> InstanceSet:
+        """Every instance in scope carrying all of ``tags``, each already located."""
+        if not tags:
+            raise TypeError(
+                "`tags` needs at least one tag: none at all would select every instance."
+            )
+        what = f"instances tagged {', '.join(tags)}"
+
+        async def in_metro(endpoint: MetroEndpoint) -> builtins.list[Located[Instance]]:
+            found = self._pages(endpoint, opts, details=True, tags=tags, page_size=None)
+            return [
+                Located(
+                    target=MetroTarget(
+                        metro=endpoint.metro, base_url=endpoint.base_url, ref=_ref_of(inst)
+                    ),
+                    value=inst,
+                )
+                async for inst in found
+            ]
+
+        async def locate() -> builtins.list[InstanceHandle[Instance]]:
+            endpoints = await self._endpoints(opts)
+            if len(endpoints) == 1:
+                hits = await in_metro(endpoints[0])
+            else:
+                try:
+                    hits = await fanout_collect(endpoints, in_metro)
+                except MetroFanoutError as err:
+                    # What did arrive is reported as instances, as every other
+                    # partial answer is, not as the located matches built here.
+                    err.results = [hit.value for hit in err.results]
+                    raise
+            return [
+                InstanceHandle(
+                    self,
+                    HandleSteps(
+                        locate=resolved(hit),
+                        fetch=lambda target: self.read(target, opts),
+                        what=what,
+                        located=True,
+                        options=call,
+                    ),
+                )
+                for hit in hits
+            ]
+
+        return InstanceSet(locate, what)
 
     def list(
         self,
@@ -719,27 +1102,41 @@ class Instances(Resource[InstancesApi]):
             endpoints = await self._endpoints(opts)
 
             def per_metro(endpoint: MetroEndpoint) -> AsyncIterator[Instance]:
-                async def fetch_page(count: int, start: str | None) -> builtins.list[Instance]:
-                    res = await self.api.get_instances(
-                        count=count,
-                        from_=start,
-                        details=details,
-                        tags=comma_separated(tags),
-                        **self._call(endpoint, opts),
-                    )
-                    return list_tagged(res, _KEY, endpoint.metro, Instance)
-
-                return paginate(fetch_page, lambda inst: inst.uuid, page_size)
+                return self._pages(endpoint, opts, details=details, tags=tags, page_size=page_size)
 
             async for instance in fanout(endpoints, per_metro):
                 yield instance
 
         return Listing(merged())
 
+    def _pages(
+        self,
+        endpoint: MetroEndpoint,
+        opts: ScopeOptions,
+        *,
+        details: bool | None,
+        tags: Sequence[str] | None,
+        page_size: int | None,
+    ) -> AsyncIterator[Instance]:
+        """One metro's listing, page by page, every instance tagged with the metro."""
+
+        async def fetch_page(count: int, start: str | None) -> builtins.list[Instance]:
+            res = await self.api.get_instances(
+                count=count,
+                from_=start,
+                details=details,
+                tags=comma_separated(tags),
+                **self._call(endpoint, opts),
+            )
+            return list_tagged(res, _KEY, endpoint.metro, Instance)
+
+        return paginate(fetch_page, lambda inst: inst.uuid, page_size)
+
     async def delete(
         self,
         refs: RefLike | Sequence[RefLike],
         *,
+        timeout_seconds: int | None = None,
         metros: MetroScope | None = None,
         headers: Mapping[str, str] | None = None,
         base_url: str | None = None,
@@ -748,16 +1145,22 @@ class Instances(Resource[InstancesApi]):
         """Delete one or more instances.
 
         An instance the API could not delete raises, with the ones it did on the
-        error's ``results``.
+        error's ``results``. ``timeout_seconds`` blocks until they are gone, or
+        for that long; ``-1`` waits for as long as the platform allows. The read
+        timeout is stretched to outlast the wait only when no ``timeout`` was given.
 
         References are located first when the scope spans metros, so each
         instance is deleted only in the metro that holds it.
         """
         opts = scoped(options(headers, base_url, timeout), metros)
+        if timeout_seconds is not None and "timeout" not in opts:
+            opts["timeout"] = _outlives(self._session.platform.timeout, timeout_seconds)
+        extra = {} if timeout_seconds is None else {"timeout_s": timeout_seconds}
 
         def call(group: MetroGroup) -> Awaitable[BaseModel]:
             body = [
-                models.DeleteInstanceRequestItem.model_validate(ref_dict(ref)) for ref in group.refs
+                models.DeleteInstanceRequestItem.model_validate(ref_dict(ref) | extra)
+                for ref in group.refs
             ]
             return self.api.delete_instances(body=body, **self._call(group.endpoint, opts))
 
@@ -834,6 +1237,60 @@ class Instances(Resource[InstancesApi]):
             uuid=uuid, name=name, details=True, **self._call(target, opts)
         )
         return tag_first(res, _KEY, target, Instance, "instance")
+
+    async def _stopped(
+        self, err: UnikraftCloudError, endpoint: MetroEndpoint, opts: ScopeOptions
+    ) -> InstanceStoppedError | None:
+        """The failed create as a stopped instance, when that is what it was.
+
+        The API reports an instance that stopped before it was running as a
+        failed item naming the instance and its state, with no error code of
+        its own, so the instance is read for the reason; one deleted on stop
+        is reported in the ``deleted`` state, and what the item says is all
+        there is. An item in another state, or one carrying the API's own
+        error code -- a name already taken, say -- is that failure, and stays
+        as it is.
+        """
+        item = next((error for error in err.errors or () if error.uuid), None)
+        if item is None or item.uuid is None:
+            return None
+        if item.state is not None and item.state not in ("stopped", "deleted"):
+            return None
+        if item.state is None and item.code is not None:
+            return None
+        uuid = item.uuid
+        instance: Instance | None = None
+        if item.state != "deleted":
+            target = MetroTarget(
+                metro=endpoint.metro, base_url=endpoint.base_url, ref=Ref(uuid=uuid)
+            )
+            try:
+                instance = await self.read(target, opts)
+            except NotFoundError as missing:
+                # A route that is not there fails the read like any other failure.
+                if not missing.absent:
+                    return None
+                # Gone between the create's answer and the read.
+                instance = None
+            except UnikraftCloudError:
+                return None
+            if instance is not None and instance.state not in ("stopped", "deleted"):
+                return None
+        gone = instance is None or instance.state == "deleted"
+        if instance is None:
+            # What the failed item said is all there is.
+            instance = Instance(
+                uuid=uuid, name=item.name, state=item.state or "stopped", metro=endpoint.metro
+            )
+        detail = instance.describe_stop()
+        return InstanceStoppedError(
+            f"instance {describe_ref(_ref_of(instance))} stopped before it was running"
+            + (f": {detail}" if detail else "")
+            + ("; it is gone already" if gone else ""),
+            instance=instance,
+            errors=err.errors,
+            body=err.body,
+        )
 
     async def _find(self, endpoint: MetroEndpoint, ref: Ref, opts: ScopeOptions) -> Instance | None:
         """Look for one instance in one metro; absent is not a failure."""

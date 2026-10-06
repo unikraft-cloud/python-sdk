@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
 from . import models_gen as models
 
 
 class NodeApi(ApiClient):
-    """Low-level "plumbing" client for the `Node` resource.
+    """Low-level "plumbing" client for the `node` resource.
 
     Methods mirror the OpenAPI specification and return the raw response
     envelope. The idiomatic clients are built on top of this.
@@ -24,7 +23,7 @@ class NodeApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.HealthzResponse:
         """Health Check"""
-        return await self._request(
+        return await self.request(
             models.HealthzResponse,
             method="GET",
             path="/v1/healthz",

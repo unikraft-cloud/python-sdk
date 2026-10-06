@@ -9,25 +9,27 @@ from __future__ import annotations
 
 from ...core.http import ApiClient, ApiClientConfig, ApiClientGroup
 from . import models_gen as models
+from .audit_gen import AuditApi
 from .autoscale_gen import AutoscaleApi
 from .certificates_gen import CertificatesApi
 from .images_gen import ImagesApi
 from .instances_gen import InstancesApi
 from .node_gen import NodeApi
-from .service_groups_gen import ServiceGroupsApi
+from .services_gen import ServicesApi
 from .users_gen import UsersApi
 from .volumes_gen import VolumesApi
 
 __all__ = [
     "ApiClient",
     "ApiClientConfig",
+    "AuditApi",
     "AutoscaleApi",
     "CertificatesApi",
     "ImagesApi",
     "InstancesApi",
     "NodeApi",
     "PlatformApi",
-    "ServiceGroupsApi",
+    "ServicesApi",
     "UsersApi",
     "VolumesApi",
     "models",
@@ -60,11 +62,13 @@ class PlatformApi(ApiClientGroup):
 
     def __init__(self, config: ApiClientConfig) -> None:
         super().__init__(config)
+        #: The audit log, as a stream of events.
+        self.audit = AuditApi(self.config)
         self.autoscale = AutoscaleApi(self.config)
         self.certificates = CertificatesApi(self.config)
         self.images = ImagesApi(self.config)
         self.instances = InstancesApi(self.config)
         self.node = NodeApi(self.config)
-        self.services = ServiceGroupsApi(self.config)
+        self.services = ServicesApi(self.config)
         self.users = UsersApi(self.config)
         self.volumes = VolumesApi(self.config)

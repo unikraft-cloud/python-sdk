@@ -15,10 +15,52 @@ from pydantic import BaseModel, ConfigDict, Field
 # adds is one line to widen.
 
 
+AuditEventType = Literal["vm.state_change", "vm.start_failed", "gap"]
+"""
+The type of an audit event.
+
+An enum rather than an open union because this is also a query parameter,
+and
+an open union generates as an interface that a client cannot serialise into
+a
+filter. Further event types are added here; a Go client decodes one it does
+not know as its plain string value rather than failing.
+"""
+
+AuditOrigin = Literal[
+    "unknown",
+    "api",
+    "guest",
+    "proxy",
+    "autoscale",
+    "scale-to-zero",
+    "scheduled-op",
+    "restart",
+    "update",
+    "system",
+    "network",
+    "autokill",
+    "mtss",
+]
+"""What caused the operation."""
+
+AuditTrigger = Literal["requested", "observed"]
+"""Whether the event was raised by the operation or observed as a result of it."""
+
 AdjustmentType = Literal["change", "exact", "percentage"]
 """
 AdjustmentType defines the type of adjustment to be made in an autoscaling
 step policy.
+"""
+
+GetAutoscaleConfigurationsResponseStatus = Literal["success", "error", "unconfigured"]
+"""The status of the response."""
+
+StepPolicyMetric = Literal["cpu"]
+"""
+The step policy is a type of autoscaling policy that scales the number of
+instances in a service by a fixed number of instances at each step. It uses
+a metric to determine when to scale up or down.
 """
 
 CertificateState = Literal["pending", "valid", "error"]
@@ -35,58 +77,53 @@ service using this certificate is not available if this is not a renewal. |
 | `valid`   | The certificate is valid and can be used by your services. |
 | `error`   | The certificate request failed after multiple attempts. This
 can happen, for example, if your DNS configuration is not correct, you run
-into Let’s Encrypt™ quota limits, or the domain validation process failed
-for some other reason. There won’t be any further automatic attempts. |
+into Let's Encrypt™ quota limits, or the domain validation process failed
+for some other reason. There won't be any further automatic attempts. |
 """
-
-ConnectionHandler = Literal["tls", "http", "redirect"]
-"""
-Connection handlers to use for the service.  Handlers define how the service
-will handle incoming connections and forward traffic from the Internet to
-your application.  For example, a service can be configured to terminate TLS
-connections, redirect HTTP traffic, or enable HTTP mode for load balancing.
-You configure the handlers for every published service port individually.
-
-There are currently 3 supported handlers:
-
-| Handler    | Description |
-|------------|-------------|
-| `tls`      | Terminate the TLS connection at the Unikraft Cloud gateway
-using our wildcard certificate issued for the kraft.cloud domain. The
-gateway forwards the unencrypted traffic to your application. |
-| `http`     | Enable HTTP mode on the load balancer to load balance on the
-level of individual HTTP requests. In this mode, only HTTP connections are
-accepted. If this option is not set the load balancer works in TCP mode and
-distributes TCP connections. |
-| `redirect` | Redirect traffic from the source port to the destination
-port. |
-
-Note that there is a set of constraints when publishing ports:
-- Port 80: MUST have "http" and MUST not have "tls" set;
-- Port 443: MUST have http and tls set;
-- The `redirect` handler can only be set on port 80 (HTTP) to redirect to
-  port 443 (HTTPS);
-- All other ports MUST have tls and MUST not have http set.
-"""
-
-GetAutoscaleConfigurationsResponseStatus = Literal["success", "error", "unconfigured"]
-"""The status of the response."""
 
 InlineDataEncoding = Literal["text", "base64"]
 """Encoding type for inline file data."""
 
-InstanceFeature = Literal["delete-on-stop"]
+PaginationOrder = Literal["asc", "desc"]
+"""The sort order used by list endpoints."""
+
+PaginationSortBy = Literal["create_time"]
+"""The sort field used by list endpoints."""
+
+ResponseStatus = Literal["success", "error", "partial_success"]
+"""The response status of an API request."""
+
+SchedPriority = Literal["normal", "medium", "high", "admin"]
+"""
+SchedPriority defines the scheduling priority for an instance.
+User requires the `override_vm_priority` permission to change it.
+
+The list of available scheduling priorities:
+
+| Priority | Description |
+|----------|-------------|
+| `normal` | Default scheduling priority. |
+| `medium` | Medium scheduling priority. |
+| `high`   | High scheduling priority. |
+| `admin`  | Admin scheduling priority. |
+"""
+
+InstanceFeature = Literal["delete-on-stop", "nested-virt"]
 """
 Features are specific configurations or capabilities that can be enabled for
 the instance.
 
 The list of available features to enable for the instance:
 
-| Feature          | Description |
-|------------------|-------------|
-| `delete_on_stop` | The instance will be deleted when it is stopped. This
+| Feature            | Description |
+|--------------------|-------------|
+| `delete-on-stop`   | The instance will be deleted when it is stopped. This
 is useful for instances that are not needed after they are stopped, such as
-temporary or ephemeral instances. |
+temporary or ephemeral instances. Cannot be combined with a `restart_policy`
+other than `never`. |
+| `nested-virt`      | Expose virtualization extensions to the guest, so
+that it can run virtual machines of its own. Requires the `nested_virt`
+permission. |
 """
 
 InstancePendingUpdateStatus = Literal["pending", "failed"]
@@ -97,11 +134,9 @@ InstanceRestartPolicy = Literal["never", "always", "on-failure"]
 The restart policy of an instance.
 
 When an instance stops either because the application exits or the instance
-crashes, Unikraft Cloud can auto-restart your instance.  Auto-restarts are
+crashes, Unikraft Cloud can auto-restart your instance. Auto-restarts are
 performed according to the restart policy configured for a particular
-instance.
-
-The policy can have the following values:
+instance. The policy can have the following values:
 
 | Policy       | Description |
 |--------------|-------------|
@@ -111,19 +146,14 @@ within the instance (i.e., the application exits or the instance crashes). |
 | `on-failure` | Only restart the instance if it crashes. |
 
 When an instance stops, the stop reason and the configured restart policy
-are
-evaluated to decide if a restart should be performed.  Unikraft Cloud uses
-an
-exponential back-off delay (immediate, 5s, 10s, 20s, 40s, ..., 5m) to slow
-down restarts in tight crash loops. If an instance runs without problems for
-10s the back-off delay is reset and the restart sequence ends.
-
+are evaluated to decide if a restart should be performed. Unikraft Cloud
+uses an exponential back-off delay (immediate, 5s, 10s, 20s, 40s, ..., 5m)
+to slow down restarts in tight crash loops. If an instance runs without
+problems for 10s the back-off delay is reset and the restart sequence ends.
 The `restart.attempt` attribute reported in counts the number of restarts
-performed in the current sequence.  The `restart.next_at` field indicates
-when the next restart will take place if a back-off delay is in effect.
-
-A manual start or stop of the instance aborts the restart sequence and
-resets
+performed in the current sequence. The `restart.next_at` field indicates
+when the next restart will take place if a back-off delay is in effect. A
+manual start or stop of the instance aborts the restart sequence and resets
 the back-off delay.
 """
 
@@ -154,6 +184,18 @@ InstanceState = Literal[
 ]
 """The current state of an instance."""
 
+InstanceType = Literal["micro", "full"]
+"""
+The type of virtual machine used to run an instance.
+
+| Type    | Description |
+|---------|-------------|
+| `micro` | A lightweight microVM (default). Boots in milliseconds and is
+suitable for most workloads. |
+| `full`  | A full virtual machine with broader hardware support, such as
+GPU passthrough. Requires a plan with full VM support. |
+"""
+
 MutableCheckpointInstanceOperation = Literal["set", "add", "del"]
 """The operations available on a checkpoint instance's properties."""
 
@@ -161,7 +203,7 @@ MutableCheckpointInstanceProperty = Literal["tags", "delete_lock", "autokill"]
 """The mutable properties of a checkpoint instance that can be updated."""
 
 MutableInstanceOperation = Literal["set", "add", "del"]
-"""The operations available on an instance's properties."""
+"""Mutable instance operations."""
 
 MutableInstanceProperty = Literal[
     "image",
@@ -179,73 +221,78 @@ MutableInstanceProperty = Literal[
     "dependencies",
     "sched_priority",
     "plugins",
+    "annotations",
 ]
 """The mutable properties of an instance that can be updated."""
+
+MutableTemplateInstanceOperation = Literal["set", "add", "del"]
+"""Mutable template instance operations."""
+
+MutableTemplateInstanceProperty = Literal["tags", "delete_lock", "autokill"]
+"""The mutable properties of a template instance that can be updated."""
+
+PullPolicy = Literal["always", "if_not_present", "never"]
+"""PullPolicy defines when an image should be pulled."""
+
+ScheduleAction = Literal["start", "stop", "delete", "exec"]
+"""The action to perform on a scheduled operation."""
+
+HealthState = Literal["unknown", "healthy", "degraded"]
+"""The health state reported by a single health checker."""
+
+ConnectionHandler = Literal["tls", "http", "redirect"]
+"""
+Connection handlers to use for the service.
+
+Handlers define how the service will handle incoming connections and
+forward traffic from the Internet to your application. For example, a
+service can be configured to terminate TLS connections, redirect HTTP
+traffic, or enable HTTP mode for load balancing. You configure the handlers
+for every published service port individually.
+
+There are currently 3 supported handlers:
+
+| Handler    | Description |
+|------------|-------------|
+| `tls`      | Terminate the TLS connection at the Unikraft Cloud gateway
+using our wildcard certificate issued for the kraft.cloud domain. The
+gateway forwards the unencrypted traffic to your application. |
+| `http`     | Enable HTTP mode on the load balancer to load balance on the
+level of individual HTTP requests. In this mode, only HTTP connections are
+accepted. If this option is not set the load balancer works in TCP mode and
+distributes TCP connections. |
+| `redirect` | Redirect traffic from the source port to the destination
+port. |
+
+Note that there is a set of constraints when publishing ports:
+
+- Port 80: MUST have "http" and MUST not have "tls" set;
+- Port 443: MUST have http and tls set;
+- The `redirect` handler can only be set on port 80 (HTTP) to redirect to
+port 443 (HTTPS);
+- All other ports MUST have tls and MUST not have http set.
+"""
 
 MutableServiceGroupOperation = Literal["set", "add", "del"]
 """The mutable operations available on a service group's properties."""
 
 MutableServiceGroupProperty = Literal["services", "domains", "soft_limit", "hard_limit", "autokill"]
-"""The mutable properties of a service group."""
+"""Mutable service group properties."""
 
-MutableTemplateInstanceOperation = Literal["set", "add", "del"]
-"""The operations available on a template instance's properties."""
-
-MutableTemplateInstanceProperty = Literal["tags", "delete_lock", "autokill"]
-"""The mutable properties of a template instance that can be updated."""
+ServiceProtocol = Literal["tcp", "udp"]
+"""Protocol for a service."""
 
 MutableTemplateVolumeOperation = Literal["set", "add", "del"]
-"""The operations available on a template volume's properties."""
+"""Mutable template volume operations."""
 
 MutableTemplateVolumeProperty = Literal["tags", "delete_lock"]
-"""The mutable properties of a template volume."""
+"""Mutable template volume properties."""
 
 MutableVolumeOperation = Literal["set", "add", "del"]
-"""The operations available on a volume's properties."""
+"""Mutable volume operations."""
 
 MutableVolumeProperty = Literal["size_mb", "tags", "quota_policy", "delete_lock"]
-"""The mutable properties of a volume."""
-
-PaginationOrder = Literal["asc", "desc"]
-"""The sort order used by list endpoints."""
-
-PaginationSortBy = Literal["create_time"]
-"""The sort field used by list endpoints."""
-
-PullPolicy = Literal["always", "if_not_present", "never"]
-"""PullPolicy defines when an image should be pulled."""
-
-ResponseStatus = Literal["success", "error", "partial_success"]
-"""The response status of an API request."""
-
-SchedPriority = Literal["normal", "medium", "high", "admin"]
-"""
-SchedPriority defines the scheduling priority for an instance.
-User requires the `override_vm_priority` permission to change it.
-
-The list of available scheduling priorities:
-
-| Priority | Description |
-|----------|-------------|
-| `normal` | Default scheduling priority. |
-| `medium` | Medium scheduling priority. |
-| `high`   | High scheduling priority. |
-| `admin`  | Admin scheduling priority. |
-"""
-
-ScheduleAction = Literal["start", "stop", "delete", "exec"]
-"""The action to perform on a scheduled operation."""
-
-StepPolicyMetric = Literal["cpu"]
-"""
-The step policy is a type of autoscaling policy that scales the number of
-instances in a service by a fixed number of instances at each step.
-It uses a metric to determine when to scale up or down.
-"""
-
-UserPermission = Literal[
-    "root", "override_edns_blacklist", "developer", "volume_manager", "override_vm_priority"
-]
+"""Mutable volume properties."""
 
 VolumeAccessMode = Literal["rwo", "rox", "rwx"]
 """
@@ -254,7 +301,7 @@ behavior and caching strategy.
 """
 
 VolumeQuotaPolicy = Literal["static", "dynamic"]
-"""VolumeQuotaPolicy defines the quota policy of a volume."""
+"""Quota policy for a volume."""
 
 VolumeState = Literal[
     "uninitialized", "initializing", "available", "idle", "mounted", "busy", "error", "template"
@@ -262,75 +309,15 @@ VolumeState = Literal[
 """VolumeState defines the state of a volume at a given moment."""
 
 
-class AddUsersRequest(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    users: list[User] | None = None
-
-
-class AddUsersResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
+class AuditAttribution(BaseModel):
     """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
+    The operation an event belongs to.
+
+    Events sharing an `operation` describe one overarching action, which is what
+    makes a state transition attributable to the thing that caused it rather
+    than
+    only observable after the fact.
     """
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    data: AddUsersResponseData | None = None
-    """The response data for this request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class AddUsersResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    results: list[DataResult] | None = None
-    """The status of the operation for each user in the request."""
-
-
-class AttachVolumeByUUIDRequestBody(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    attach_to: NameOrUUID | None = None
-    """UUID or name of the instance to attach the volume to."""
-    at: str | None = None
-    """
-    Path of the mountpoint.
-
-    The path must be absolute, not contain `.` and `..` components, and not
-    contain colons (`:`). The path must point to an empty directory. If the
-    directory does not exist, it is created.
-    """
-    readonly: bool | None = None
-    """Whether the volume should be mounted read-only."""
-
-
-class AttachVolumesRequestItem(BaseModel):
-    """A single request item for attaching a volume to an instance."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -338,35 +325,90 @@ class AttachVolumesRequestItem(BaseModel):
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    attach_to: NameOrUUID | None = None
-    """UUID or name of the instance to attach the volume to."""
-    at: str | None = None
-    """
-    Path of the mountpoint.
+    operation: str | None = None
+    """UUID shared by every event belonging to the same operation."""
+    kind: AuditOperationKind | None = None
+    """What was performed on the object."""
+    trigger: AuditTrigger | None = None
+    """Whether this event was raised by the operation or observed after it."""
+    origin: AuditOrigin | None = None
+    """What caused the operation."""
+    user: str | None = None
+    """The user that caused the operation, when one did."""
 
-    The path must be absolute, not contain `.` and `..` components, and not
-    contain colons (`:`). The path must point to an empty directory. If the
-    directory does not exist, it is created.
+
+class AuditEvent(BaseModel):
+    """One audit event."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    type: AuditEventType | None = None
+    """The type of event."""
+    timestamp: datetime | None = None
+    """When the event was raised."""
+    object: AuditObject | None = None
+    """The object the event is about. Absent on `gap`, which names no object."""
+    attribution: AuditAttribution | None = None
+    """The operation the event belongs to."""
+    data: AuditEventData | None = None
+    """The event payload. Its fields depend on `type`."""
+    dropped: int | None = None
+    """How many events were lost. Only on `gap`."""
+
+
+class AuditEventData(BaseModel):
     """
-    readonly: bool | None = None
-    """Whether the volume should be mounted read-only."""
+    The payload of an audit event.
+
+    Which fields are present depends on the event type:
+
+    - `vm.state_change`
+    - `vm.start_failed`
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    prev: str | None = None
+    """The state before the transition."""
+    new: str | None = None
+    """The state after the transition."""
+    state: str | None = None
+    """The state the instance was left in after a failed start."""
+    error: str | None = None
+    """The error that failed the start, as an errno name such as `EDQUOT`."""
+    stop: AuditStop | None = None
+    """Why the instance stopped."""
+
+
+class AuditObject(BaseModel):
+    """The object an audit event is about."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    type: AuditObjectType | None = None
+    """The kind of object."""
     uuid: str | None = None
-    """
-    The UUID of the volume to attach. Mutually exclusive with name.
-    Exactly one of uuid or name must be provided.
-    """
-    name: str | None = None
-    """
-    The name of the volume to attach. Mutually exclusive with UUID.
-    Exactly one of uuid or name must be provided.
-    """
+    """The object's UUID."""
+    owner: str | None = None
+    """The UUID of the user the object belongs to."""
+    tags: list[str] | None = None
+    """The tags set on the object."""
 
 
-class AttachVolumesResponse(BaseModel):
-    """
-    The response message for attaching one or more volume(s) given their
-    UUID(s) or name(s).
-    """
+class AuditStop(BaseModel):
+    """Why an instance stopped."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -374,66 +416,20 @@ class AttachVolumesResponse(BaseModel):
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: AttachVolumesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class AttachVolumesResponseAttachedVolume(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    uuid: str | None = None
-    """The UUID of the volume that was attached."""
-    name: str | None = None
-    """The name of the volume that was attached."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class AttachVolumesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    volumes: list[AttachVolumesResponseAttachedVolume] | None = None
-    """The volume(s) which were attached by the request."""
+    reason: list[str] | None = None
+    """The origins that contributed to the stop."""
+    code: int | None = None
+    """The kernel stop code."""
+    cause: str | None = None
+    """The stop cause."""
 
 
 class AutoscalePolicy(BaseModel):
     """
-    AutoscalePolicy defines the autoscale policy for a service.
-    Right now it contains fields from both the `ondemand` and `step` policies.
-    They are marked both as optional, so only one of them should be set at a
-    time. This is a current limitation of the API design.
+    AutoscalePolicy defines the autoscale policy for a service. Right now it
+    contains fields from both the `ondemand` and `step` policies. They are
+    marked both as optional, so only one of them should be set at a time. This
+    is a current limitation of the API design.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -445,19 +441,24 @@ class AutoscalePolicy(BaseModel):
     name: str | None = None
     """The name of the policy."""
     enabled: bool | None = None
-    """If the policy is enabled."""
+    """Whether the policy is enabled."""
     metric: StepPolicyMetric | None = None
-    """Metric to use for the step policy."""
+    """Metric to use for the step policy (only for step policies)."""
     adjustment_type: AdjustmentType | None = None
-    """The type of adjustment to be made in the step policy."""
+    """
+    The type of adjustment to be made in the step policy (only for step
+    policies).
+    """
     steps: list[AutoscalePolicyStep] | None = None
     """
-    The steps for the step policy.
-    Each step defines an adjustment value and optional bounds.
+    The steps for the step policy. Each step defines an adjustment value and
+    optional bounds.
     """
 
 
 class AutoscalePolicyStep(BaseModel):
+    """A single step in a step autoscaling policy."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -472,7 +473,112 @@ class AutoscalePolicyStep(BaseModel):
     """Upper bound for the step."""
 
 
-class Certificate(BaseModel):
+class ConfigurationInstanceCreateArgs(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    roms: InstanceCreateArgsInstanceCreateRequestRoms | None = None
+    """The ROM to use for the autoscale configuration."""
+    template: NameOrUUID | None = None
+    """The template to use for the autoscale configuration."""
+
+
+class CreateAutoscaleConfigurationByServiceGroupUUIDRequest(BaseModel):
+    """
+    The request message to create an autoscale configuration for a service group
+    based on its UUID.
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str
+    """The UUID of the service to create a configuration for."""
+    min_size: int | None = None
+    """The minimum number of instances to keep running."""
+    max_size: int | None = None
+    """The maximum number of instances to keep running."""
+    warmup_time_ms: int | None = None
+    """The warmup time in milliseconds for new instances."""
+    cooldown_time_ms: int | None = None
+    """The cooldown time in milliseconds for the autoscale configuration."""
+    create_args: CreateAutoscaleConfigurationByServiceGroupUUIDRequestInstanceCreateArgs
+    """The arguments to use when creating instances."""
+    policies: list[AutoscalePolicy] | None = None
+    """The policies to apply to the autoscale configuration."""
+
+
+class CreateAutoscaleConfigurationByServiceGroupUUIDRequestInstanceCreateArgs(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    roms: InstanceCreateArgsInstanceCreateRequestRoms | None = None
+    """The ROM to use for the autoscale configuration."""
+    template: NameOrUUID | None = None
+    """The template to use for the autoscale configuration."""
+
+
+class CreateAutoscaleConfigurationPolicyRequest(BaseModel):
+    """
+    The request message to create an autoscale configuration policy for a
+    service.
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    name: str
+    """The name of the policy."""
+    type: AutoscalePolicy
+    """The policy type to add to the autoscale configuration."""
+
+
+class CreateAutoscaleConfigurationPolicyResponse(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: CreateAutoscaleConfigurationPolicyResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class CreateAutoscaleConfigurationPolicyResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    policies: list[CreateAutoscaleConfigurationPolicyResponsePolicy] | None = None
+
+
+class CreateAutoscaleConfigurationPolicyResponsePolicy(BaseModel):
+    """Per-item result for a create autoscale configuration policy operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -480,22 +586,408 @@ class Certificate(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     uuid: str | None = None
-    """
-    The UUID of the certificate.
-
-    This is a unique identifier for the certificate that is generated when the
-    certificate is created.  The UUID is used to reference the certificate in
-    API calls and can be used to identify the certificate in all API calls that
-    require an identifier.
-    """
+    """The UUID of the resource."""
     name: str | None = None
-    """
-    The name of the certificate.
+    """The human-readable name of the resource."""
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    error: int | None = None
+    """An optional error code providing additional information about the status."""
 
-    This is a human-readable name that can be used to identify the certificate.
-    The name must be unique within the context of your account.  The name can
-    also be used to identify the certificate in API calls.
+
+class CreateAutoscaleConfigurationsRequestConfiguration(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
+    min_size: int | None = None
+    """The minimum number of instances to keep running."""
+    max_size: int | None = None
+    """The maximum number of instances to keep running."""
+    warmup_time_ms: int | None = None
+    """The warmup time in milliseconds for new instances."""
+    cooldown_time_ms: int | None = None
+    """The cooldown time in milliseconds for the autoscale configuration."""
+    create_args: ConfigurationInstanceCreateArgs
+    """The arguments to use when creating instances."""
+    policies: list[AutoscalePolicy] | None = None
+    """The policies to apply to the autoscale configuration."""
+
+
+class CreateAutoscaleConfigurationsResponse(BaseModel):
+    """The response to a CreateAutoscaleConfigurationRequest."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: CreateAutoscaleConfigurationsResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class CreateAutoscaleConfigurationsResponseConfigurationsResponse(BaseModel):
+    """Per-item result for a create autoscale configurations operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    error: int | None = None
+    """An optional error code providing additional information about the status."""
+
+
+class CreateAutoscaleConfigurationsResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    service_groups: list[CreateAutoscaleConfigurationsResponseConfigurationsResponse] | None = None
+
+
+class DeleteAutoscaleConfigurationPolicyResponse(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: DeleteAutoscaleConfigurationPolicyResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class DeleteAutoscaleConfigurationPolicyResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    policies: list[DeleteAutoscaleConfigurationPolicyResponsePoliciesResponse] | None = None
+
+
+class DeleteAutoscaleConfigurationPolicyResponsePoliciesResponse(BaseModel):
+    """Per-item result for a delete autoscale configuration policy operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    name: str | None = None
+    """The name of the deleted policy."""
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    error: int | None = None
+    """An optional error code providing additional information about the status."""
+
+
+class DeleteAutoscaleConfigurationsResponse(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: DeleteAutoscaleConfigurationsResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class DeleteAutoscaleConfigurationsResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    service_groups: list[DeleteAutoscaleConfigurationsResponseServiceGroup] | None = None
+
+
+class DeleteAutoscaleConfigurationsResponseServiceGroup(BaseModel):
+    """Per-item result for a delete autoscale configurations operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    error: int | None = None
+    """An optional error code providing additional information about the status."""
+
+
+class DeletePolicyRequest(BaseModel):
+    """The request message to delete an autoscale configuration policy by name."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    name: str
+    """The name of the policy to delete."""
+
+
+class GetAutoscaleConfigurationPolicyRequest(BaseModel):
+    """The request message to get an autoscale configuration policy by name."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    name: str
+    """The Name of the policy to get."""
+
+
+class GetAutoscaleConfigurationPolicyResponse(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: GetAutoscaleConfigurationPolicyResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class GetAutoscaleConfigurationPolicyResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    policies: list[GetAutoscaleConfigurationPolicyResponsePolicyResponse] | None = None
+
+
+class GetAutoscaleConfigurationPolicyResponsePolicyResponse(BaseModel):
+    """Per-item result for a get autoscale configuration policy operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    policy: AutoscalePolicy | None = None
+    """The policy which was retrieved by the request."""
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    error: int | None = None
+    """An optional error code providing additional information about the status."""
+
+
+class GetAutoscaleConfigurationsResponse(BaseModel):
+    """The response message for a GetAutoscaleConfigurationsRequest."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: GetAutoscaleConfigurationsResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: GetAutoscaleConfigurationsResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class GetAutoscaleConfigurationsResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    service_groups: list[GetAutoscaleConfigurationsResponseServiceGroup] | None = None
+
+
+class GetAutoscaleConfigurationsResponseServiceGroup(BaseModel):
+    """Per-item result for a get autoscale configurations operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    enabled: bool | None = None
+    """If the autoscale configuration is enabled."""
+    min_size: int | None = None
+    """The minimum number of instances to keep running. Only if enabled is true."""
+    max_size: int | None = None
+    """The maximum number of instances to keep running. Only if enabled is true."""
+    warmup_time_ms: int | None = None
+    """The warmup time in seconds for new instances. Only if enabled is true."""
+    cooldown_time_ms: int | None = None
     """
+    The cooldown time in seconds for the autoscale configuration. Only if
+    enabled is true.
+    """
+    template: ServiceGroupTemplate | None = None
+    """
+    The instance template used for the autoscale configuration. Only if
+    enabled is true.
+    """
+    policies: list[AutoscalePolicy] | None = None
+    """The policies applied to the autoscale configuration."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    error: int | None = None
+    """An optional error code providing additional information about the status."""
+    status: ResponseStatus | None = None
+    """The status of the response."""
+
+
+class InstanceCreateArgsInstanceCreateRequestRoms(BaseModel):
+    """A ROM to use for an autoscale instance create configuration."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    name: str
+    """The name of the ROM."""
+    image: str | ImageSpec | None = None
+    """
+    The image of the ROM to use for the autoscale configuration. Mutually
+    exclusive with `files`. Accepts either a plain image reference string
+    (`"nginx:latest"`) or an object carrying additional pull configuration
+    (`{"url": "nginx:latest", "pull_policy": "always"}`).
+    """
+    files: list[InlineFile] | None = None
+    """
+    Inline files to use as the ROM content. When specified, the platform
+    creates an EROFS image from the provided files. Mutually exclusive with
+    `image`.
+    """
+
+
+class ServiceGroupTemplate(BaseModel):
+    """The instance template used for an autoscale configuration."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the template used for the autoscale configuration."""
+    name: str | None = None
+    """The name of the template used for the autoscale configuration."""
+
+
+class Certificate(BaseModel):
+    """Certificate with per-item response envelope fields merged in."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
     created_at: datetime | None = None
     """The time the certificate was created."""
     common_name: str | None = None
@@ -559,29 +1051,636 @@ class Certificate(BaseModel):
     ready for use, or in an error state. See CertificateState enum for
     detailed state descriptions.
     """
+    validation: CertificateValidation | None = None
+    """Validation status when state is pending."""
+    service_groups: list[ID] | None = None
+    """Service groups using this certificate."""
+
+
+class CertificateValidation(BaseModel):
+    """Validation status for a pending certificate."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    attempt: int | None = None
+    """The current validation attempt number."""
+    next: datetime | None = None
+    """The next validation attempt time."""
+
+
+class CreateCertificateRequest(BaseModel):
+    """The request message for creating/uploading a new certificate."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    name: str | None = None
+    """
+    The name of the certificate.
+
+    This is a human-readable name that can be used to identify the certificate.
+    The name must be unique within the context of your account. If no name is
+    specified, a random name is generated for you. The name can also be used
+    to identify the certificate in API calls.
+    """
+    cn: str | None = None
+    """
+    The common name (CN) of the certificate.
+
+    Deprecated: Use `common_name` instead.
+    """
+    common_name: str | None = None
+    """
+    The common name (CN) of the certificate.
+
+    This must be a fully-qualified domain name (FQDN). Exactly one of `cn`
+    or `common_name` must be specified.
+    """
+    chain: str
+    """
+    The certificate chain in PEM format. Required for user-uploaded
+    certificates.
+    """
+    pkey: str
+    """The private key in PEM format. Required for user-uploaded certificates."""
+
+
+class CreateCertificateResponse(BaseModel):
+    """The response message for creating a new certificate."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
     status: ResponseStatus | None = None
-    """
-    An optional field representing the status of the request.  This field is
-    only set when this message object is used as a response message.
-    """
+    """The status of the response."""
     message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: CreateCertificateResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class CreateCertificateResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    certificates: list[Certificate] | None = None
+
+
+class DeleteCertificatesResponse(BaseModel):
     """
-    An optional message providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
+    The response message for deleting of one or more certificate(s) given their
+    UUID(s) or name(s).
     """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: DeleteCertificatesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class DeleteCertificatesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    certificates: list[DeleteCertificatesResponseDeletedCertificate] | None = None
+
+
+class DeleteCertificatesResponseDeletedCertificate(BaseModel):
+    """Per-item result for a delete certificates operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
     error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+
+
+class GetCertificatesResponse(BaseModel):
     """
-    An optional error code providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
+    The response message for getting one or more certificate(s) given their
+    UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: GetCertificatesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class GetCertificatesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    certificates: list[Certificate] | None = None
+
+
+class UpdateCertificateByUUIDRequestBody(BaseModel):
+    """The request body for updating a certificate by its UUID or name."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    chain: str
+    """
+    The new certificate chain. This is the public chain of the certificate in
+    PEM format. The chain should include the certificate and any intermediate
+    certificates.
+    """
+    pkey: str
+    """
+    The new private key. This is the private key of the certificate in PEM
+    format. The private key must match the public key in the certificate
+    chain.
+    """
+
+
+class UpdateCertificatesRequestItem(BaseModel):
+    """A single update operation to be applied to a certificate."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
+    chain: str
+    """
+    The new certificate chain. This is the public chain of the certificate in
+    PEM format. The chain should include the certificate and any intermediate
+    certificates.
+    """
+    pkey: str
+    """
+    The new private key. This is the private key of the certificate in PEM
+    format. The private key must match the public key in the certificate
+    chain.
+    """
+
+
+class UpdateCertificatesResponse(BaseModel):
+    """
+    The response message for updating one or more certificate(s) given their
+    UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: UpdateCertificatesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class UpdateCertificatesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    certificates: list[Certificate] | None = None
+
+
+class ID(BaseModel):
+    """Common identity fields for a resource."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+
+
+class InlineFile(BaseModel):
+    """An inline file entry represents a single file within an image."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    path: str | None = None
+    """The file path within the image."""
+    encoding: InlineDataEncoding | None = None
+    """The encoding of the data field. Defaults to "text"."""
+    data: str | None = None
+    """The file data, encoded according to the encoding field."""
+
+
+class NameOrUUID(BaseModel):
+    """An identifier for a resource — either a name or a UUID, but not both."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
+
+
+class ResponseError(BaseModel):
+    """The error response message for an API request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: int | None = None
+    """The HTTP status code of the error."""
+
+
+class GetImagesRequestTagOrDigest(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    digest: str | None = None
+    tag: str | None = None
+
+
+class GetImagesResponse(BaseModel):
+    """The response message for getting one or more image(s)."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: GetImagesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class GetImagesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    images: list[Image] | None = None
+
+
+class Image(BaseModel):
+    """An image representing a VM which can be deployed on Unikraft Cloud."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    url: str | None = None
+    """The image URL."""
+    created_at: datetime | None = None
+    """The time the image was created."""
+    initrd_or_rom: bool | None = None
+    """Whether the image is an initrd or ROM."""
+    size_in_bytes: int | None = None
+    """The size of the image in bytes."""
+    args: list[str] | None = None
+    """Command-line arguments for the image."""
+    env: dict[str, str] | None = None
+    """Environment variables for the image."""
+    tags: list[str] | None = None
+    """Tags associated with the image."""
+    users: list[str] | None = None
+    """Users associated with the image."""
+    persistent: bool | None = None
+    """
+    Whether the image is pinned and exempt from cache eviction. Only
+    populated (and only ever `true`) for callers with image manager
+    permissions; omitted otherwise, including when the image is not pinned.
+    """
+
+
+class PinImageRequestItem(BaseModel):
+    """The request item for pinning a single image."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    url: str
+    """The image URL to pull and pin."""
+    credentials: str | None = None
+    """
+    Optional credentials for authenticating to an OCI registry.
+    Only valid for OCI registry URLs; the platform rejects this
+    field for non-OCI schemes.
+    """
+    headers: dict[str, str] | None = None
+    """Optional HTTP headers to send when fetching the image."""
+    pull_policy: PullPolicy | None = None
+    """
+    Controls when the image is pulled relative to what is already cached on
+    the node. If unset, this is inferred from the URL.
+    """
+    timeout_s: int
+    """
+    Number of seconds to wait for the pull to complete. Required and must
+    be non-zero; `-1` waits up to the platform's maximum timeout.
+    """
+    merge_requests: bool | None = None
+    """
+    Avoid duplicate pulls by merging with any in-flight request for the
+    same image. Defaults to `true`.
+    """
+    autokill: PinImageRequestItemAutokill | None = None
+    """Automatically unpin the image after a period of inactivity."""
+
+
+class PinImageRequestItemAutokill(BaseModel):
+    """Automatically unpin the image after a period of inactivity."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    time_ms: int
+    """
+    Automatically unpin the image after this many milliseconds of
+    inactivity. `0` (the default) disables this.
+    """
+
+
+class PinImagesResponse(BaseModel):
+    """The response message for pinning one or more images."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: PinImagesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class PinImagesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    images: list[PinImagesResponseImage] | None = None
+    """The result of pinning each requested image."""
+
+
+class PinImagesResponseImage(BaseModel):
+    """
+    The result of pinning a single image. On success, `uuid` through `tags`
+    are set; on failure, only `message` and `error` are set (the image
+    being pulled is not otherwise identified in the response).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the image. Only set on success."""
+    name: str | None = None
+    """The name of the image. Only set on success."""
+    created_at: datetime | None = None
+    """The time the image was created. Only set on success."""
+    state: str | None = None
+    """The current state of the image (e.g. `ready`). Only set on success."""
+    url: str | None = None
+    """The image URL. Only set on success."""
+    persistent: bool | None = None
+    """
+    Whether the image is pinned and exempt from cache eviction. Only set
+    on success, where it is always `true`.
+    """
+    tags: list[str] | None = None
+    """The tags associated with the image. Only set on success."""
+
+
+class UnpinImageRequestItem(BaseModel):
+    """The request item for unpinning a single image."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str
+    """
+    The UUID of the image to unpin. Only UUID is supported; name, URL,
+    tag, and digest are not.
+    """
+
+
+class UnpinImagesResponse(BaseModel):
+    """The response message for unpinning one or more images."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: UnpinImagesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class UnpinImagesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    images: list[UnpinImagesResponseImage] | None = None
+    """The result of unpinning each requested image."""
+
+
+class UnpinImagesResponseImage(BaseModel):
+    """The result of unpinning a single image."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the image."""
+    name: str | None = None
+    """
+    The name of the image. Only set on success, and only if the image
+    has a name.
+    """
+
+
+class CheckpointAutokill(BaseModel):
+    """Automatic delete-on-idle configuration for the checkpoint instance."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    time_ms: int | None = None
+    """
+    Time in milliseconds after the checkpoint was last used for restoring
+    before it is deleted. A value of 0 disables checkpoint autokill.
     """
 
 
 class CheckpointHistoryEntry(BaseModel):
     """
-    A checkpoint history entry, representing a single checkpoint in the
-    history of an instance.
+    A checkpoint history entry, representing a single checkpoint in the history
+    of an instance.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -598,458 +1697,35 @@ class CheckpointHistoryEntry(BaseModel):
     """The time the checkpoint was created."""
 
 
-class CloneVolumeByUUIDRequestBody(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    vol_name: str | None = None
-    """
-    The name of the new cloned volume.  If not provided, a random name
-    of the form `vol-X` is generated for you, where `X` is a 5 character
-    long random alphanumeric suffix.
-    """
-    quota_policy: VolumeQuotaPolicy | None = None
-    """
-    The quota policy for the new cloned volume.  If not provided, the quota
-    policy of the source volume is used.
-    """
-    tags: list[str] | None = None
-    """A list of tags to assign to the new cloned volume."""
-
-
-class CloneVolumesRequestItem(BaseModel):
-    """A single request item describing the volume to clone."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    vol_name: str | None = None
-    """
-    The name of the new cloned volume.  If not provided, a random name
-    of the form `vol-X` is generated for you, where `X` is a 5 character
-    long random alphanumeric suffix.
-    """
-    quota_policy: VolumeQuotaPolicy | None = None
-    """
-    The quota policy for the new cloned volume.  If not provided, the quota
-    policy of the source volume is used.
-    """
-    tags: list[str] | None = None
-    """A list of tags to assign to the new cloned volume."""
-    uuid: str | None = None
-    """The UUID of the volume to clone.  Mutually exclusive with name."""
-    name: str | None = None
-    """The name of the volume to clone.  Mutually exclusive with UUID."""
-
-
-class CloneVolumesResponse(BaseModel):
-    """The response message for cloning one or more volume(s)."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: CloneVolumesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class CloneVolumesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    volumes: list[CloneVolumesResponseVolume] | None = None
-    """The volume(s) which were cloned by the request."""
-
-
-class CloneVolumesResponseVolume(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    uuid: str | None = None
-    """The UUID of the newly cloned volume."""
-    name: str | None = None
-    """The name of the newly cloned volume."""
-    state: VolumeState | None = None
-    """The state of the volume."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class ConfigurationInstanceCreateArgs(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    roms: InstanceCreateArgsInstanceCreateRequestRoms | None = None
-    """The ROM to use for the autoscale configuration."""
-    template: NameOrUUID | None = None
-    """The template to use for the autoscale configuration."""
-
-
-class CreateAutoscaleConfigurationByServiceGroupUUIDRequest(BaseModel):
-    """
-    The request message to create an autoscale configuration for a service group
-    based on its UUID.
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    uuid: str | None = None
-    """
-    The UUID of the service to create a configuration for.
-    Mutually exclusive with name.
-    """
-    min_size: int | None = None
-    """The minimum number of instances to keep running."""
-    max_size: int | None = None
-    """The maximum number of instances to keep running."""
-    warmup_time_ms: int | None = None
-    """The warmup time in milliseconds for new instances."""
-    cooldown_time_ms: int | None = None
-    """The cooldown time in milliseconds for the autoscale configuration."""
-    create_args: CreateAutoscaleConfigurationByServiceGroupUUIDRequestInstanceCreateArgs | None = (
-        None
-    )
-    """The arguments to use when creating the autoscale configuration."""
-    policies: list[AutoscalePolicy] | None = None
-    """The policies to apply to the autoscale configuration."""
-
-
-class CreateAutoscaleConfigurationByServiceGroupUUIDRequestInstanceCreateArgs(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    roms: InstanceCreateArgsInstanceCreateRequestRoms | None = None
-    """The ROM to use for the autoscale configuration."""
-    template: NameOrUUID | None = None
-    """The template to use for the autoscale configuration."""
-
-
-class CreateAutoscaleConfigurationPolicyRequest(BaseModel):
-    """
-    The request message to create an autoscale configuration policy for a
-    service.
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    name: str | None = None
-    """The Name of the service to add a policy to."""
-    type: AutoscalePolicy | None = None
-    """The policy type to add to the autoscale configuration."""
-
-
-class CreateAutoscaleConfigurationPolicyResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: CreateAutoscaleConfigurationPolicyResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class CreateAutoscaleConfigurationPolicyResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    policies: list[CreateAutoscaleConfigurationPolicyResponsePolicy] | None = None
-    """The policies which were added by the request."""
-
-
-class CreateAutoscaleConfigurationPolicyResponsePolicy(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    uuid: str | None = None
-    """The UUID of the service of the added policy."""
-    name: str | None = None
-    """The name of the service of the added policy."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class CreateAutoscaleConfigurationsRequestConfiguration(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    min_size: int | None = None
-    """The minimum number of instances to keep running."""
-    max_size: int | None = None
-    """The maximum number of instances to keep running."""
-    warmup_time_ms: int | None = None
-    """The warmup time in milliseconds for new instances."""
-    cooldown_time_ms: int | None = None
-    """The cooldown time in milliseconds for the autoscale configuration."""
-    create_args: ConfigurationInstanceCreateArgs | None = None
-    """The arguments to use when creating the autoscale configuration."""
-    policies: list[AutoscalePolicy] | None = None
-    """The policies to apply to the autoscale configuration."""
-    uuid: str | None = None
-    """
-    The UUID of the service to create a configuration for.
-    Mutually exclusive with name.
-    """
-    name: str | None = None
-    """
-    The name of the service to create a configuration for.
-    Mutually exclusive with UUID.
-    """
-
-
-class CreateAutoscaleConfigurationsResponse(BaseModel):
-    """The response to a CreateAutoscaleConfigurationRequest."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: CreateAutoscaleConfigurationsResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class CreateAutoscaleConfigurationsResponseConfigurationsResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    uuid: str | None = None
-    """The UUID of the service where the configuration was created."""
-    name: str | None = None
-    """The name of the service where the configuration was created."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class CreateAutoscaleConfigurationsResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    service_groups: list[CreateAutoscaleConfigurationsResponseConfigurationsResponse] | None = None
-    """The configuration(s) which were created by the request."""
-
-
-class CreateCertificateRequest(BaseModel):
-    """The request message for creating/uploading a new certificate."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    name: str | None = None
-    """
-    The name of the certificate.
-
-    This is a human-readable name that can be used to identify the certificate.
-    The name must be unique within the context of your account.  If no name is
-    specified, a random name is generated for you.  The name can also be used
-    to identify the certificate in API calls.
-    """
-    cn: str | None = None
-    """
-    The common name (CN) of the certificate.
-
-    Deprecated: Use `common_name` instead.
-    """
-    common_name: str | None = None
-    """
-    The common name (CN) of the certificate.
-
-    This must be a fully-qualified domain name (FQDN). Exactly one of `cn`
-    or `common_name` must be specified.
-    """
-    chain: str | None = None
-    """The chain of the certificate."""
-    pkey: str | None = None
-    """The private key of the certificate."""
-
-
-class CreateCertificateResponse(BaseModel):
-    """The response message for creating of a certificate."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: CreateCertificateResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class CreateCertificateResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    certificates: list[Certificate] | None = None
-    """
-    The certificate which was created by this request.
-
-    Note: only one certificate can be specified in the request, so this
-    will always contain a single entry.
-    """
-
-
 class CreateCheckpointInstancesRequestItem(BaseModel):
     """A single checkpoint creation request."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    from_: NameOrUUID | None = Field(default=None, alias="from")
+    from_: NameOrUUID = Field(alias="from")
     """The source instance to create a checkpoint from (by name or UUID)."""
     name: str | None = None
-    """
-    (Optional).  The name of the checkpoint.
-    If not provided, a name will be generated.
-    """
+    """The name of the checkpoint. If not provided, a name will be generated."""
     timeout_s: int | None = None
     """
     Timeout in seconds to wait for the checkpoint to be created.
     No wait performed for a value of 0.
     """
+    tags: list[str] | None = None
+    """Tags to associate with the checkpoint."""
+    autokill: CheckpointAutokill | None = None
+    """Automatic delete-on-idle configuration for the new checkpoint."""
 
 
 class CreateCheckpointInstancesResponse(BaseModel):
-    """The response message for creating one or more checkpoint instances."""
+    """
+    The response message for creating one or more checkpoint(s) from existing
+    instance(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -1060,22 +1736,18 @@ class CreateCheckpointInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: CreateCheckpointInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class CreateCheckpointInstancesResponseCheckpointInstance(BaseModel):
+    """Per-item result for a create checkpoint instances operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -1083,26 +1755,22 @@ class CreateCheckpointInstancesResponseCheckpointInstance(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     status: ResponseStatus | None = None
-    """The status of this particular checkpoint creation operation."""
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the checkpoint instance that was created."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the checkpoint instance that was created."""
+    """The human-readable name of the resource."""
     state: InstanceState | None = None
     """The current state of the checkpoint."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
 
 
 class CreateCheckpointInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -1118,48 +1786,49 @@ class CreateInstanceRequest(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     name: str | None = None
     """
-    (Optional).  The name of the instance.
+    The name of the instance.
 
-    If not provided, a random name will be generated.  The name must be unique.
+    If not provided, a random name will be generated. The name must be
+    unique.
     """
     image: str | ImageSpec | None = None
     """
-    (Optional).  The image to use for the instance.
+    The image to use for the instance.
 
-    Either an image or a template must be specified.  Accepts either a plain
+    Either an image or a template must be specified. Accepts either a plain
     image reference string (`"nginx:latest"`) or an object carrying additional
     pull configuration (`{"url": "nginx:latest", "pull_policy": "always"}`).
     """
     args: list[str] | None = None
-    """(Optional).  The arguments to pass to the instance when it starts."""
+    """The arguments to pass to the instance when it starts."""
     env: dict[str, str] | None = None
-    """(Optional).  Environment variables to set for the instance."""
+    """Environment variables to set for the instance."""
     memory_mb: int | None = None
-    """(Optional).  Memory in MB to allocate for the instance.  Default is 128."""
+    """Memory in MB to allocate for the instance. Default is 128."""
     service_group: CreateInstanceRequestServiceGroup | None = None
     """
-    (Optional).  The service group configuration when creating an instance.
+    The service group configuration when creating an instance.
 
-    When creating an instance, either a previously created (persistent) service
-    group can be referenced (either through its name or UUID), or a new
-    (ephemeral) service group can be created for the instance by specifying the
-    list of services it should expose and optionally the domains it should use.
-    Not used by template instances.
+    When creating an instance, either a previously created (persistent)
+    service group can be referenced (either through its name or UUID), or a
+    new (ephemeral) service group can be created for the instance by
+    specifying the list of services it should expose and optionally the
+    domains it should use. Not used by template instances.
     """
     volumes: list[CreateInstanceRequestVolume] | None = None
     """
     Volumes to attach to the instance.
 
     This list can contain both existing and new volumes to create as part of
-    the instance creation.  Existing volumes can be referenced by their name or
-    UUID.  New volumes can be created by specifying a name, size in MiB, and
-    mount point in the instance.  The mount point is the directory in the
+    the instance creation. Existing volumes can be referenced by their name or
+    UUID. New volumes can be created by specifying a name, size in MiB, and
+    mount point in the instance. The mount point is the directory in the
     instance where the volume will be mounted.
     """
     autostart: bool | None = None
@@ -1169,48 +1838,45 @@ class CreateInstanceRequest(BaseModel):
     """
     replicas: int | None = None
     """
-    (Optional).  Number of additional replicas to create.  The total
-    number of instances created is `replicas + 1`.  Defaults to 0.
+    Number of additional replicas to create. The total number of instances
+    created is `replicas + 1`. Defaults to 0.
     """
     restart_policy: InstanceRestartPolicy | None = None
     """
-    Restart policy for the instance.  This defines how the instance
-    should behave when it stops or crashes.  Cannot be combined with
+    Restart policy for the instance. This defines how the instance
+    should behave when it stops or crashes. Cannot be combined with
     the `delete-on-stop` feature.
     """
     scale_to_zero: CreateInstanceScaleToZero | None = None
     """
-    Scale-to-zero configuration for the instance.  Requires
-    `service_group` to be set.  Cannot be combined with the
+    Scale-to-zero configuration for the instance. Requires
+    `service_group` to be set. Cannot be combined with the
     `delete-on-stop` feature.
     """
     vcpus: int | None = None
-    """
-    (Optional).  Number of vCPUs to allocate for the instance.
-    Defaults to 1.
-    """
+    """Number of vCPUs to allocate for the instance. Defaults to 1."""
     wait_timeout_ms: int | None = None
     """
-    Deprecated: Use `timeout_s` instead.  Timeout in milliseconds to
-    wait for all new instances to reach running state.  Requires
-    `autostart` to be set.  If `timeout_s` is not set, this value is
-    converted by rounding up to the next full second.  No wait
+    Deprecated: Use `timeout_s` instead. Timeout in milliseconds to
+    wait for all new instances to reach running state. Requires
+    `autostart` to be set. If `timeout_s` is not set, this value is
+    converted by rounding up to the next full second. No wait
     performed for a value of 0.
     """
     features: list[InstanceFeature] | None = None
     """
-    Features to enable for the instance.  Features are specific
+    Features to enable for the instance. Features are specific
     configurations or capabilities that can be enabled for the
-    instance.  The `scale-to-zero` and `delete-on-stop` features are
+    instance. The `scale-to-zero` and `delete-on-stop` features are
     mutually exclusive.
     """
     timeout_s: int | None = None
     """
     Timeout in seconds to wait for all new instances to reach running
-    state.  Requires `autostart` to be set.  If you autostart your
+    state. Requires `autostart` to be set. If you autostart your
     new instance, you can wait for it to finish starting with a
     blocking API call if you specify a wait timeout greater than
-    zero.  No wait performed for a value of 0.
+    zero. No wait performed for a value of 0.
     """
     roms: list[CreateInstanceRequestRom] | None = None
     """
@@ -1222,15 +1888,33 @@ class CreateInstanceRequest(BaseModel):
     """
     plugins: list[CreateInstanceRequestPlugin] | None = None
     """
-    (Optional).  Plugins to attach to the instance.  Plugins let you attach
-    small helper programs to an instance and reach each one over a direct,
-    authenticated HTTP endpoint.  Each plugin loads from its own ROM image,
-    mounts at `/uk/plugins/<plugin_name>`, and is reachable at
-    `.../v1/instances/<uuid>/plugins/<plugin_name>/<path>`.  At most 8 plugins
+    Plugins to attach to the instance. Plugins let you attach small helper
+    programs to an instance and reach each one over a direct, authenticated
+    HTTP endpoint. Each plugin loads from its own ROM image, mounts at
+    `/uk/plugins/<plugin_name>`, and is reachable at
+    `.../v1/instances/<uuid>/plugins/<plugin_name>/<path>`. At most 8 plugins
     may be attached to an instance.
     """
     tags: list[str] | None = None
-    """(Optional).  Tags to associate with the instance."""
+    """Tags to associate with the instance."""
+    annotations: dict[str, str] | None = None
+    """
+    Annotations to associate with the instance.
+
+    Unlike tags, annotations also reach the guest: they are included in the
+    instance's startdata, and selected keys can be injected into the console
+    log output.
+
+    Keys follow the Kubernetes annotation key syntax, `[<prefix>/]<name>`:
+    the optional prefix is a non-wildcard DNS subdomain of at most 253
+    characters, and the name is at most 63 characters of `[-_.a-zA-Z0-9]`
+    starting and ending with an alphanumeric. Values are unconstrained apart
+    from ASCII control characters. An instance holds at most 256 annotations.
+
+    When the instance inherits annotations from a template, branch, or
+    checkpoint, the given annotations are merged into them rather than
+    replacing them. On a key clash the value given here wins.
+    """
     template: CreateInstanceRequestTemplate | None = None
     """
     Template instances.
@@ -1245,54 +1929,71 @@ class CreateInstanceRequest(BaseModel):
     """
     schedules: list[Schedule] | None = None
     """
-    (Optional).  Schedules for the instance.  Scheduled operations let you
-    automatically start, stop, delete, or exec a command in the instance on
-    a calendar-based schedule.  For `exec` schedules, set the `args` field
-    to the command and its arguments.  Each instance stores its own
-    schedules, and cloning preserves them.
+    Schedules for the instance. Scheduled operations let you automatically
+    start, stop, delete, or exec a command in the instance on a calendar-
+    based schedule. For `exec` schedules, set the `args` field to the command
+    and its arguments. Each instance stores its own schedules, and cloning
+    preserves them.
     """
     autokill: CreateInstanceRequestAutokill | None = None
     """
-    (Optional).  Automatic delete-on-idle/request-limit configuration.
-    Not used for template instances.
+    Automatic delete-on-idle/request-limit configuration. Not used for
+    template instances.
     """
     hostname: str | None = None
     """
-    (Optional).  The hostname of the instance.
+    The hostname of the instance.
 
-    If not provided, the hostname will be set to the instance name.  The
+    If not provided, the hostname will be set to the instance name. The
     hostname must be a valid DNS label (e.g., "my-instance") and is used for
     internal DNS resolution within the Unikraft Cloud network.
     """
     dependencies: list[NameOrUUID] | None = None
     """
-    (Optional).  Dependencies of the instance.
+    Dependencies of the instance.
 
     A list of instance identifiers (name or UUID) that this instance depends
-    on.  Dependencies define startup ordering and can be used to ensure that
+    on. Dependencies define startup ordering and can be used to ensure that
     prerequisite instances are running before this instance starts.
     """
     branch_from: NameOrUUID | None = None
     """
-    (Optional).  Reference to an existing instance to branch from.
-    The instance can be running, stopped, or a template.  If the source
-    instance is running, a snapshot will be taken asynchronously and the
-    new instance will wait for it to complete before starting.
-    Mutually exclusive with `image` and `template`.
+    Reference to an existing instance to branch from. The instance can be
+    running or stopped. If the source instance is running, a snapshot will be
+    taken asynchronously and the new instance will wait for it to complete
+    before starting. Mutually exclusive with `image` and `template`.
     """
     checkpoint: NameOrUUID | None = None
     """
-    (Optional).  Reference to an existing checkpoint to create the instance
-    from.  The checkpoint must be in the `checkpoint` state.  The new instance
-    will be created with the same configuration and state as the checkpoint.
-    Mutually exclusive with `image`, `template`, and `branch_from`.
+    Reference to an existing checkpoint to create the instance from. The
+    checkpoint must be in the `checkpoint` state. The new instance will be
+    created with the same configuration and state as the checkpoint. Mutually
+    exclusive with `image`, `template`, and `branch_from`.
     """
     gateway: str | None = None
     """The default gateway to configure inside the guest."""
     nameserver: str | None = None
     """The DNS resolver to configure inside the guest."""
     network_interfaces: list[CreateInstanceRequestNetworkInterface] | None = None
-    """A list of one to four interfaces to attach"""
+    """Network interfaces to attach to the instance."""
+    type: InstanceType | None = None
+    """
+    The type of virtual machine to use for the instance. Defaults to `micro`,
+    which runs on Firecracker. `full` runs on QEMU instead and is required
+    for GPU passthrough (see `gpus`) and, in the future, Windows VMs. QEMU-
+    backed instances currently do not support scale-to-zero, templates,
+    branching, or checkpointing, and only support block-based volumes (no
+    virtiofs). Requires a plan with full VM support and cannot be combined
+    with `template`, `branch_from`, or `checkpoint`.
+    """
+    gpus: int | None = None
+    """
+    Number of GPUs to attach to the instance. Currently restricted to at most
+    1. Requires `type` to be `full` and a plan with GPU support. A GPU stays
+    assigned to the instance, even while stopped, until the instance is
+    deleted. Cannot be combined with `template`, `branch_from`, or
+    `checkpoint`.
+    """
 
 
 class CreateInstanceRequestAutokill(BaseModel):
@@ -1303,8 +2004,8 @@ class CreateInstanceRequestAutokill(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     time_ms: int | None = None
@@ -1321,25 +2022,23 @@ class CreateInstanceRequestAutokill(BaseModel):
 
 class CreateInstanceRequestDomain(BaseModel):
     """
-    The domain configuration for the service group.
-
-    A domain defines a publicly accessible domain name for the instance.  If
-    the domain name ends with a period `.`, it must be a valid Fully Qualified
-    Domain Name (FQDN), otherwise it will become a subdomain of the target
-    metro.  The domain can be associated with an existing certificate by
-    specifying the certificate's name or UUID.  If no certificate is specified
-    and a FQDN is provided, Unikraft Cloud will automatically generate a new
-    certificate for the domain based on Let's Encrypt and seek to accomplish a
-    DNS-01 challenge.
+    The domain configuration for the service group. A domain defines a publicly
+    accessible domain name for the instance. If the domain name ends with a
+    period `.`, it must be a valid Fully Qualified Domain Name (FQDN), otherwise
+    it will become a subdomain of the target metro. The domain can be associated
+    with an existing certificate by specifying the certificate's name or UUID.
+    If no certificate is specified and a FQDN is provided, Unikraft Cloud will
+    automatically generate a new certificate for the domain based on Let's
+    Encrypt and seek to accomplish a DNS-01 challenge.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    name: str | None = None
+    name: str
     """
     Publicly accessible domain name.
 
@@ -1351,7 +2050,7 @@ class CreateInstanceRequestDomain(BaseModel):
     certificate: NameOrUUID | None = None
     """
     A reference to an existing certificate which can be used for the
-    specified domain.  If unspecified, Unikraft Cloud will
+    specified domain. If unspecified, Unikraft Cloud will
     automatically generate a new certificate for the domain based on Let's
     Encrypt and seek to accomplish a DNS-01 challenge.
     """
@@ -1362,8 +2061,8 @@ class CreateInstanceRequestNetworkInterface(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     name: str | None = None
@@ -1382,6 +2081,11 @@ class CreateInstanceRequestNetworkInterface(BaseModel):
     The interface IP address in CIDR notation. Provide it together
     with tap_name to bring your own interface.
     """
+    mac: str | None = None
+    """
+    The interface MAC address. Provide it together with tap_name. Must be
+    a unicast address outside the platform's address pool.
+    """
     autoconfig: bool | None = None
     """Whether the guest configures the interface itself. Defaults to true."""
     relay: NetworkInterfaceRelay | None = None
@@ -1391,166 +2095,140 @@ class CreateInstanceRequestNetworkInterface(BaseModel):
 class CreateInstanceRequestPlugin(BaseModel):
     """
     A helper program attached to the instance and reachable over a direct,
-    authenticated HTTP endpoint.  A plugin runs inside the instance next to the
-    main application, loads from its own ROM image, and answers requests that
-    the Unikraft Cloud API forwards to it.
+    authenticated HTTP endpoint. A plugin runs inside the instance next to
+    the main application, loads from its own ROM image, and answers requests
+    that the Unikraft Cloud API forwards to it.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    name: str | None = None
+    name: str
     """
-    The plugin name.  It becomes the `<plugin_name>` segment in the plugin
-    endpoint (`.../plugins/<plugin_name>/<path>`).  A plugin name has a
+    The plugin name. It becomes the `<plugin_name>` segment in the plugin
+    endpoint (`.../plugins/<plugin_name>/<path>`). A plugin name has a
     maximum length of 63 characters and contains only letters (`a`-`z`,
     `A`-`Z`), digits (`0`-`9`), hyphen (`-`), and underscore (`_`).
     """
-    rom: str | ImageSpec | None = None
+    image: str | ImageSpec | None = None
     """
-    The plugin's ROM image.  The platform loads the image, mounts it at
+    The plugin's image. The platform loads the image, mounts it at
     `/uk/plugins/<plugin_name>`, and runs its `init` program when the plugin
-    starts.  Accepts either a plain image reference string
+    starts. Accepts either a plain image reference string
     (`"user/myplugin:latest"`) or an object carrying additional pull
     configuration (`{"url": "user/myplugin:latest", "pull_policy": "always"}`).
+    Exactly one of `image` and `rom` must be set.
+    """
+    rom: str | ImageSpec | None = None
+    """
+    The plugin's image, under its former name. The platform still accepts
+    it and adds a deprecation warning to the response. Exactly one of
+    `image` and `rom` must be set.
+
+    Deprecated: Use `image` instead.
     """
     config: Any | None = None
     """
-    (Optional).  Arbitrary JSON configuration that the platform passes to the
-    plugin's `init` program on `STDIN`.  Any JSON value works, including a
-    string, a number, or an object.
+    Arbitrary JSON configuration that the platform passes to the plugin's
+    `init` program on `STDIN`. Any JSON value works, including a string, a
+    number, or an object.
     """
 
 
 class CreateInstanceRequestRom(BaseModel):
-    """Read-Only Memory (ROM) blob to attach to the instance."""
+    """A ROM to attach when creating an instance."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    name: str | None = None
+    name: str
     """The name of the ROM to use for the instance configuration."""
     image: str | ImageSpec | None = None
     """
-    (Optional).  The image of the ROM to use for the instance configuration.
-    Mutually exclusive with `files`.  Accepts either a plain image reference
-    string (`"nginx:latest"`) or an object carrying additional pull
-    configuration (`{"url": "nginx:latest", "pull_policy": "always"}`).
-    """
-    files: list[InlineFile] | None = None
-    """
-    (Optional).  Inline files to use as the ROM content.  When specified,
-    the platform creates an EROFS image from the provided files.
-    Mutually exclusive with `image`.
+    The image of the ROM to use for the instance configuration. Mutually
+    exclusive with `files`. Accepts either a plain image reference string
+    (`"nginx:latest"`) or an object carrying additional pull configuration
+    (`{"url": "nginx:latest", "pull_policy": "always"}`).
     """
     at: str | None = None
     """
-    (Optional).  The path at which the ROM should be automatically mounted
-    inside the instance.  When set, the platform mounts the ROM device at
-    the specified path so the guest does not need to mount it manually.
-    When omitted, the ROM is exposed as a raw block device and the guest is
-    responsible for mounting it.
+    The path at which the ROM should be automatically mounted inside the
+    instance. When set, the platform mounts the ROM device at the specified
+    path so the guest does not need to mount it manually. When omitted, the
+    ROM is exposed as a raw block device and the guest is responsible for
+    mounting it.
+    """
+    files: list[InlineFile] | None = None
+    """
+    Inline files to use as the ROM content. When specified, the platform
+    creates an EROFS image from the provided files. Mutually exclusive with
+    `image`.
     """
 
 
 class CreateInstanceRequestServiceGroup(BaseModel):
     """
-    The service group configuration when creating an instance.
-
-    If no existing (persistent) service group is specified via its identifier,
-    a new (ephemeral) service group can be created by specifying the services
-    it should expose.  A service defines the configuration settings of an
-    exposed port by the instance.  A service is a combination of a public port,
-    an internal port, and a set of handlers that define how the service will
-    handle incoming connections.
+    The service group configuration when creating an instance. If no existing
+    (persistent) service group is specified via its identifier, a new
+    (ephemeral) service group can be created by specifying the services it
+    should expose. A service defines the configuration settings of an exposed
+    port by the instance. A service is a combination of a public port, an
+    internal port, and a set of handlers that define how the service will handle
+    incoming connections.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    domains: list[CreateInstanceRequestDomain] | None = None
-    """
-    If no existing (persistent) service group is specified via its
-    identifier, a new (ephemeral) service group can be created.  In addition
-    to the services it must expose, you can specify which domains it should
-    use too.
-    """
-    services: list[Service] | None = None
-    """
-    If no existing service group identifier is provided, one or more new
-    (ephemeral, non-persistent) service(s) can be created with the following
-    definitions.
-    """
-    soft_limit: int | None = None
-    """
-    The soft limit for the number of services that can be created in this
-    service group.
-    """
-    hard_limit: int | None = None
-    """
-    The hard limit for the number of services that can be created in this
-    service group.
-    """
     uuid: str | None = None
-    """
-    (Optional).  Reference an existing (persistent) service group by its
-    UUID.  Mutually exclusive with name.
-    """
+    """The UUID of the resource."""
     name: str | None = None
-    """
-    (Optional).  Reference an existing (persistent) service group by its
-    name.  Mutually exclusive with UUID.
-    """
+    """The name of the resource."""
+    domains: list[CreateInstanceRequestDomain] | None = None
+    services: list[Service] | None = None
+    soft_limit: int | None = None
+    hard_limit: int | None = None
 
 
 class CreateInstanceRequestTemplate(BaseModel):
-    """Defines the source template used to build a new instance."""
+    """Template configuration when creating an instance."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    prepare: bool | None = None
-    """
-    (Optional).  Whether the instance needs to run in order to reach template
-    state
-    """
     uuid: str | None = None
-    """
-    (Optional).  The UUID of a template instance to create the instance from.
-    Mutually exclusive with name.
-    """
+    """The UUID of the resource."""
     name: str | None = None
-    """
-    (Optional).  The name of a template instance to create the instance from.
-    Mutually exclusive with UUID.
-    """
+    """The name of the resource."""
+    prepare: bool | None = None
+    """Whether the instance needs to run in order to reach template state"""
     create_args: Instance | None = None
     """
-    (Optional). Configuration parameters to apply when building the new instance
-    from the source template.
+    Configuration parameters to apply when building the new instance from the
+    source template.
     """
     prepare_timeout_s: int | None = None
     """
-    (Optional). Timeout in seconds for preparing the template before the
-    preparation is aborted. Only applies when `prepare` is set. A value of
-    0 means no timeout.
+    Timeout in seconds for preparing the template before the preparation is
+    aborted. Only applies when `prepare` is set. A value of 0 means no
+    timeout.
     """
     autokill: TemplateAutokill | None = None
     """
-    (Optional). Automatic delete-on-idle configuration for the template.
-    Only applies when `prepare` is set.
+    Automatic delete-on-idle configuration for the template. Only applies
+    when `prepare` is set.
     """
 
 
@@ -1559,66 +2237,25 @@ class CreateInstanceRequestVolume(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     uuid: str | None = None
-    """
-    The UUID of an existing volume.
-
-    If this is the only specified field, then it will look up an existing
-    volume by this UUID.
-    """
+    """The UUID of the resource."""
     name: str | None = None
-    """
-    The name of the volume.
-
-    If this is the only specified field, then it will look up an existing
-    volume by this name.  If the volume does not exist, the request will
-    fail.  If a new volume is intended to be created, then this field must be
-    specified along with the mount point in the instance and a provisioning
-    source (size_mb or host_path).
-    """
-    at: str | None = None
-    """The mount point for the volume in the instance."""
-    readonly: bool | None = None
-    """
-    Whether the volume is read-only.
-
-    If this field is set to true, the volume will be mounted as read-only in
-    the instance.  This field is optional and defaults to false and is only
-    applicable when using an existing volume.
-    """
-    quota_policy: str | None = None
-    """Quota policy for the volume."""
-    filesystem: str | None = None
-    """
-    Filesystem type to format or configure.
-    Without custom configuration, this is either `ext4` or `virtiofs`.
-    """
-    tags: list[str] | None = None
-    """Tags to assign to the new volume."""
-    uid: int | None = None
-    """Guest UID for managed volumes (host_path mode only)."""
-    gid: int | None = None
-    """Guest GID for managed volumes (host_path mode only)."""
-    args: dict[str, str] | None = None
-    """Script arguments passed to volume initialization scripts."""
-    access_mode: VolumeAccessMode | None = None
-    """
-    Access mode of the volume, controlling sharing behavior.
-    Defaults to read-write by a single instance (RWO).
-    """
+    """The name of the resource."""
     size_mb: int | None = None
-    """
-    The size of the volume when creating a new volume.
-
-    When creating a new volume as part of the instance create request,
-    specify the size of the volume in MiB.
-    """
     host_path: str | None = None
-    """A host path to create a managed volume from."""
+    at: str
+    readonly: bool | None = None
+    quota_policy: str | None = None
+    filesystem: str | None = None
+    tags: list[str] | None = None
+    uid: int | None = None
+    gid: int | None = None
+    access_mode: VolumeAccessMode | None = None
+    args: dict[str, str] | None = None
 
 
 class CreateInstanceResponse(BaseModel):
@@ -1633,22 +2270,18 @@ class CreateInstanceResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: CreateInstanceResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class CreateInstanceResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -1656,14 +2289,15 @@ class CreateInstanceResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[Instance] | None = None
-    """The instance that was created in this request."""
 
 
 class CreateInstanceScaleToZero(BaseModel):
+    """Scale-to-zero configuration when creating an instance."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     policy: InstanceScaleToZeroPolicy | None = None
@@ -1672,15 +2306,15 @@ class CreateInstanceScaleToZero(BaseModel):
     """
     Whether the instance should be stateful when scaled to zero. If set to
     true, the instance will retain its state (e.g., RAM contents) when scaled
-    to zero.  This is useful for instances that need to maintain their state
-    across scale-to-zero operations.  If set to false, the instance will lose
+    to zero. This is useful for instances that need to maintain their state
+    across scale-to-zero operations. If set to false, the instance will lose
     its state when scaled to zero, and it will be restarted from scratch when
     scaled back up.
     """
     cooldown_time_ms: int | None = None
     """
     The cooldown time in milliseconds before the instance can be scaled to
-    zero again.  This is useful to prevent rapid scaling to zero and back up,
+    zero again. This is useful to prevent rapid scaling to zero and back up,
     which can lead to performance issues or resource exhaustion.
     """
     notify_time_ms: int | None = None
@@ -1691,142 +2325,19 @@ class CreateInstanceScaleToZero(BaseModel):
     """
 
 
-class CreateServiceGroupRequest(BaseModel):
-    """The request message for creating a new service group."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    name: str | None = None
-    """
-    Name of the service group.  This is a human-readable name that can be used
-    to identify the service group.  The name must be unique within the context
-    of your account.  If no name is specified, a random name is generated for
-    you.  The name can also be used to identify the service group in API calls.
-    """
-    services: list[Service] | None = None
-    """Description of exposed services."""
-    domains: list[CreateServiceGroupRequestDomain] | None = None
-    """Description of domains associated with the service group."""
-    soft_limit: int | None = None
-    """
-    The soft limit is used by the Unikraft Cloud load balancer to decide when
-    to wake up another standby instance.
-
-    For example, if the soft limit is set to 5 and the service consists of 2
-    standby instances, one of the instances receives up to 5 concurrent
-    requests.  The 6th parallel requests wakes up the second instance.  If
-    there are no more standby instances to wake up, the number of requests
-    assigned to each instance will exceed the soft limit.  The load balancer
-    makes sure that when the number of in-flight requests goes down again,
-    instances are put into standby as fast as possible.
-    """
-    hard_limit: int | None = None
-    """
-    The hard limit defines the maximum number of concurrent requests that an
-    instance assigned to the this service can handle.
-
-    The load balancer will never assign more requests to a single instance.  In
-    case there are no other instances available, excess requests fail (i.e.,
-    they are blocked and not queued).
-    """
-    autokill: CreateServiceGroupRequestAutokill | None = None
-    """Automatic delete-on-idle configuration."""
-
-
-class CreateServiceGroupRequestAutokill(BaseModel):
-    """Automatic delete-on-idle configuration for service groups."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    time_ms: int | None = None
-    """
-    Time in milliseconds after the service group becomes empty before it is
-    deleted. A value of 0 disables autokill.
-    """
-
-
-class CreateServiceGroupRequestDomain(BaseModel):
-    """A domain name"""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    name: str | None = None
-    """
-    Publicly accessible domain name.  If this name ends in a period `.` it must
-    be a valid Full Qualified Domain Name (FQDN), otherwise it will become a
-    subdomain of the target metro.
-    """
-    certificate: NameOrUUID | None = None
-    """
-    Use an existing certificate for the domain.  If this field is
-    specified, the domain must be associated with a valid certificate.
-    """
-
-
-class CreateServiceGroupResponse(BaseModel):
-    """The response message for creating of a service group."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: CreateServiceGroupResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class CreateServiceGroupResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    service_groups: list[ServiceGroup] | None = None
-    """
-    The service group which was created by this request.
-
-    Note: only one service group can be specified in the request, so this
-    will always contain a single entry.
-    """
-
-
 class CreateTemplateInstancesRequestItem(BaseModel):
     """A single template instance to be created."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     timeout_s: int | None = None
     """
     Timeout in seconds to wait for the template instances to be created.
@@ -1834,21 +2345,11 @@ class CreateTemplateInstancesRequestItem(BaseModel):
     desired state. No wait performed for a value of 0.
     """
     autokill: ItemAutokill | None = None
-    """(Optional). Automatic delete-on-idle configuration for the new template."""
-    uuid: str | None = None
-    """
-    The UUID of the instance to convert into template. Mutually exclusive
-    with name.
-    """
-    name: str | None = None
-    """
-    The name of the instance to convert into template. Mutually exclusive
-    with UUID.
-    """
+    """Automatic delete-on-idle configuration for the new template."""
 
 
 class CreateTemplateInstancesResponse(BaseModel):
-    """The response message for creating one or more template instances."""
+    """The response message for converting one or more instance(s) to templates."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -1859,22 +2360,18 @@ class CreateTemplateInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: CreateTemplateInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class CreateTemplateInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -1882,10 +2379,11 @@ class CreateTemplateInstancesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[CreateTemplateInstancesResponseTemplateInstance] | None = None
-    """List of template instances that were created during the operation."""
 
 
 class CreateTemplateInstancesResponseTemplateInstance(BaseModel):
+    """Per-item result for a create template instances operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -1893,422 +2391,24 @@ class CreateTemplateInstancesResponseTemplateInstance(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     status: ResponseStatus | None = None
-    """The status of this particular template instance creation operation."""
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the template instance that was created."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the template instance that was created."""
+    """The human-readable name of the resource."""
     state: InstanceState | None = None
     """The current state of the instance."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class CreateTemplateVolumesResponse(BaseModel):
-    """The response message for creating one or more template volumes."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: CreateTemplateVolumesResponseData | None = None
-    """The response data for this request"""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class CreateTemplateVolumesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    volumes: list[CreateTemplateVolumesResponseTemplateVolume] | None = None
-    """The template volume(s) which were created by the request."""
-
-
-class CreateTemplateVolumesResponseTemplateVolume(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    uuid: str | None = None
-    """The UUID of the volume converted into a template."""
-    name: str | None = None
-    """The name of the volume converted into a template."""
-    state: VolumeState | None = None
-    """The state of the volume."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class CreateVolumeRequest(BaseModel):
-    """The request message for creating a volume."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    name: str | None = None
-    """
-    The name of the volume.
-
-    This is a human-readable name that can be used to identify the volume.
-    The name must be unique within the context of your account.  If no name is
-    specified, a random name of the form `vol-X` is generated for you, where
-    `X` is a 5 character long random alphanumeric suffix..  The name can also
-    be used to identify the volume in API calls.
-    """
-    quota_policy: VolumeQuotaPolicy | None = None
-    """Quota policy for the volume."""
-    filesystem: str | None = None
-    """
-    Filesystem type to format or configure.
-    Without custom configuration, this is either `ext4` or `virtiofs`.
-    """
-    tags: list[str] | None = None
-    """Tags to assign to the new volume."""
-    uid: int | None = None
-    """Guest UID for managed volumes (host_path mode only)."""
-    gid: int | None = None
-    """Guest GID for managed volumes (host_path mode only)."""
-    args: dict[str, str] | None = None
-    """Script arguments passed to volume initialization scripts."""
-    access_mode: VolumeAccessMode | None = None
-    """
-    The access mode of the volume, controlling volume sharing behavior.
-    Defaults to `rwo` if not specified.
-    """
-    size_mb: int | None = None
-    """The size of the volume in megabytes."""
-    host_path: str | None = None
-    """A host path to create a managed volume from."""
-    template: NameOrUUID | None = None
-    """Source template volume to clone from."""
-
-
-class CreateVolumeResponse(BaseModel):
-    """The response message for creating of a volume."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: CreateVolumeResponseData | None = None
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class CreateVolumeResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    volumes: list[CreateVolumeResponseVolume] | None = None
-    """The volume(s) which were created by the request."""
-
-
-class CreateVolumeResponseVolume(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    uuid: str | None = None
-    """UUID of the newly created volume."""
-    name: str | None = None
-    """The name of the newly created volume."""
-    state: VolumeState | None = None
-    """The state of the volume."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class DataLicense(BaseModel):
-    """License information (admin only)."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    serial: str | None = None
-    """The serial number of the license certificate, hex-encoded."""
-    valid: bool | None = None
-    """Whether the license is currently valid."""
-    features: list[str] | None = None
-    """List of enabled features."""
-
-
-class DataResult(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    uuid: str | None = None
-    added: bool | None = None
-
-
-class DeleteAutoscaleConfigurationPolicyResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: DeleteAutoscaleConfigurationPolicyResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class DeleteAutoscaleConfigurationPolicyResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    policies: list[DeleteAutoscaleConfigurationPolicyResponsePoliciesResponse] | None = None
-    """The policies which were deleted by the request."""
-
-
-class DeleteAutoscaleConfigurationPolicyResponsePoliciesResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    name: str | None = None
-    """The name of the service of the deleted policy."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class DeleteAutoscaleConfigurationsResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: DeleteAutoscaleConfigurationsResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class DeleteAutoscaleConfigurationsResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    service_groups: list[DeleteAutoscaleConfigurationsResponseServiceGroup] | None = None
-    """The configuration(s) which were deleted by the request."""
-
-
-class DeleteAutoscaleConfigurationsResponseServiceGroup(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    uuid: str | None = None
-    """The UUID of the service where the configuration was deleted."""
-    name: str | None = None
-    """The name of the service where the configuration was deleted."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class DeleteCertificatesResponse(BaseModel):
-    """
-    The response message for deleting of one or more certificate(s) given their
-    UUID(s) or name(s).
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: DeleteCertificatesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class DeleteCertificatesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    certificates: list[DeleteCertificatesResponseDeletedCertificate] | None = None
-    """The certificate(s) which were deleted by the request."""
-
-
-class DeleteCertificatesResponseDeletedCertificate(BaseModel):
-    """Details of the certificate which was deleted by this request."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """
-    Indicates whether the delete operation was successful or not for this
-    certificate.
-    """
-    uuid: str | None = None
-    """The UUID of the certificate which was deleted."""
-    name: str | None = None
-    """The name of the certificate which was deleted."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
 
 
 class DeleteCheckpointInstancesResponse(BaseModel):
-    """The response message for deleting one or more checkpoint instances."""
+    """
+    The response message for deleting one or more checkpoint instance(s) given
+    their UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -2319,47 +2419,39 @@ class DeleteCheckpointInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: DeleteCheckpointInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class DeleteCheckpointInstancesResponseCheckpointInstance(BaseModel):
+    """Per-item result for a delete checkpoint instances operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    uuid: str | None = None
-    """The UUID of the checkpoint instance that was deleted."""
-    name: str | None = None
-    """The name of the checkpoint instance that was deleted."""
     status: ResponseStatus | None = None
-    """The status of this particular checkpoint instance deletion operation."""
+    """Indicates whether the operation was successful for this item."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information."""
     error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
 
 
 class DeleteCheckpointInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -2378,19 +2470,19 @@ class DeleteInstanceByUUIDRequestBody(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     timeout_s: int | None = None
     """
-    Timeout in seconds to wait for the instance to be deleted.  No wait
+    Timeout in seconds to wait for the instance to be deleted. No wait
     performed for a value of 0.
     """
     dont_retain: bool | None = None
     """
-    Delete immediately without retention.  If the instance is already
-    being retained, this will force its deletion.  Ignored if retention
+    Delete immediately without retention. If the instance is already
+    being retained, this will force its deletion. Ignored if retention
     for instances is not configured.
     """
 
@@ -2400,32 +2492,31 @@ class DeleteInstanceRequestItem(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     timeout_s: int | None = None
     """
-    Timeout in seconds to wait for the instance to be deleted.  No wait
+    Timeout in seconds to wait for the instance to be deleted. No wait
     performed for a value of 0.
     """
     dont_retain: bool | None = None
     """
-    Delete immediately without retention.  If the instance is already
-    being retained, this will force its deletion.  Ignored if retention
+    Delete immediately without retention. If the instance is already
+    being retained, this will force its deletion. Ignored if retention
     for instances is not configured.
     """
-    uuid: str | None = None
-    """Mutually exclusive with name."""
-    name: str | None = None
-    """Mutually exclusive with UUID."""
 
 
 class DeleteInstancesResponse(BaseModel):
     """
     The response message for deleting one or more instance(s) given their
-    UUID(s)
-    or name(s).
+    UUID(s) or name(s).
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -2437,22 +2528,18 @@ class DeleteInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: DeleteInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class DeleteInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -2460,11 +2547,10 @@ class DeleteInstancesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[DeleteInstancesResponseInstance] | None = None
-    """The instance(s) which were deleted by the request."""
 
 
 class DeleteInstancesResponseInstance(BaseModel):
-    """Details of the instance which was deleted by this request."""
+    """Per-item result for a delete instances operation."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -2473,117 +2559,24 @@ class DeleteInstancesResponseInstance(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     status: ResponseStatus | None = None
-    """
-    Indicates whether the start operation was successful or not for this
-    instance.
-    """
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the instance which was deleted."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the instance which was deleted."""
+    """The human-readable name of the resource."""
     previous_state: str | None = None
     """The previous state of the instance before it was deleted."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class DeletePolicyRequest(BaseModel):
-    """The request message to delete an autoscale configuration policy by name."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    name: str | None = None
-    """The Name of the policy to delete."""
-
-
-class DeleteServiceGroupsResponse(BaseModel):
-    """
-    The response message for deleting of one or more service group(s) given
-    their
-    UUID(s) or name(s).
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: DeleteServiceGroupsResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class DeleteServiceGroupsResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    service_groups: list[DeleteServiceGroupsResponseDeletedServiceGroup] | None = None
-    """The service group(s) which were deleted by the request."""
-
-
-class DeleteServiceGroupsResponseDeletedServiceGroup(BaseModel):
-    """Details of the service group which was deleted by this request."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """
-    Indicates whether the delete operation was successful or not for this
-    service group.
-    """
-    uuid: str | None = None
-    """The UUID of the service group which was deleted."""
-    name: str | None = None
-    """The name of the service group which was deleted."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
 
 
 class DeleteTemplateInstancesResponse(BaseModel):
-    """The response message for deleting one or more template instances."""
+    """
+    The response message for deleting one or more template instance(s) given
+    their UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -2594,22 +2587,18 @@ class DeleteTemplateInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: DeleteTemplateInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class DeleteTemplateInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -2617,498 +2606,34 @@ class DeleteTemplateInstancesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[DeleteTemplateInstancesResponseTemplateInstance] | None = None
-    """List of template instances that were processed during the delete operation."""
 
 
 class DeleteTemplateInstancesResponseTemplateInstance(BaseModel):
+    """Per-item result for a delete template instances operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    uuid: str | None = None
-    """The UUID of the template instance that was deleted."""
-    name: str | None = None
-    """The name of the template instance that was deleted."""
     status: ResponseStatus | None = None
-    """The status of this particular template instance deletion operation."""
+    """Indicates whether the operation was successful for this item."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information."""
     error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class DeleteTemplateVolumesResponse(BaseModel):
-    """The response message for deleting one or more template volumes."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: DeleteTemplateVolumesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class DeleteTemplateVolumesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    volumes: list[DeleteTemplateVolumesResponseTemplateVolume] | None = None
-    """The template volume(s) which were deleted by the request."""
-
-
-class DeleteTemplateVolumesResponseTemplateVolume(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the template volume that was deleted."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the template volume that was deleted."""
-    status: ResponseStatus | None = None
-    """The status of this particular template volume deletion operation."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class DeleteVolumesResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: DeleteVolumesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class DeleteVolumesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    volumes: list[DeleteVolumesResponseDeletedVolume] | None = None
-    """The volume(s) which were deleted by the request."""
-
-
-class DeleteVolumesResponseDeletedVolume(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    uuid: str | None = None
-    """The UUID of the volume that was deleted."""
-    name: str | None = None
-    """The name of the volume that was deleted."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class DetachVolumeByUUIDRequestBody(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    from_: NameOrUUID | None = Field(default=None, alias="from")
-    """
-    (Optional).  UUID or name of the instance to detach the volume from.
-    If not specified, the volume is detached from all instances.
-    """
-
-
-class DetachVolumesRequestItem(BaseModel):
-    """A single request of detaching a volume."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    from_: NameOrUUID | None = Field(default=None, alias="from")
-    """
-    (Optional).  UUID or name of the instance to detach the volume from.
-    If not specified, the volume is detached from all instances.
-    """
-    uuid: str | None = None
-    """
-    The UUID of the volume to detach. Mutually exclusive with name.
-    Exactly one of uuid or name must be provided.
-    """
-    name: str | None = None
-    """
-    The name of the volume to detach. Mutually exclusive with UUID.
-    Exactly one of uuid or name must be provided.
-    """
-
-
-class DetachVolumesResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: DetachVolumesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class DetachVolumesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    volumes: list[DetachVolumesResponseDetachedVolume] | None = None
-    """The volume(s) which were detached by the request."""
-
-
-class DetachVolumesResponseDetachedVolume(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    uuid: str | None = None
-    """The UUID of the volume that was detached."""
-    name: str | None = None
-    """The name of the volume that was detached."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class Domain(BaseModel):
-    """
-    A domain name.
-
-    Domain names are completely specified with all labels in the hierarchy of
-    the
-    DNS, having no parts omitted.  The domain can be associated with an existing
-    certificate by specifying the certificate's name or UUID.  If no certificate
-    is specified and a FQDN is provided, Unikraft Cloud will automatically
-    generate a new certificate for the domain based on Let's Encrypt and seek to
-    accomplish a DNS-01 challenge.
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    fqdn: str | None = None
-    """
-    Publicly accessible domain name.  If this name ends in a period `.` it must
-    be a valid Full Qualified Domain Name (FQDN), otherwise it will become a
-    subdomain of the target metro.
-    """
-    certificate: Certificate | None = None
-    """
-    Use an existing certificate for the domain.  If this field is
-    specified, the domain must be associated with a valid certificate.
-    """
-
-
-class GetAutoscaleConfigurationPolicyRequest(BaseModel):
-    """The request message to get an autoscale configuration policy by name."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    name: str | None = None
-    """The Name of the policy to get."""
-
-
-class GetAutoscaleConfigurationPolicyResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: GetAutoscaleConfigurationPolicyResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class GetAutoscaleConfigurationPolicyResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    policies: list[GetAutoscaleConfigurationPolicyResponsePolicyResponse] | None = None
-    """The policy which was retrieved by the request."""
-
-
-class GetAutoscaleConfigurationPolicyResponsePolicyResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    policy: AutoscalePolicy | None = None
-    """The policy which was retrieved by the request."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class GetAutoscaleConfigurationsResponse(BaseModel):
-    """The response message for a GetAutoscaleConfigurationsRequest."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: GetAutoscaleConfigurationsResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: GetAutoscaleConfigurationsResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class GetAutoscaleConfigurationsResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    service_groups: list[GetAutoscaleConfigurationsResponseServiceGroup] | None = None
-    """The configuration(s) which were retrieved by the request."""
-
-
-class GetAutoscaleConfigurationsResponseServiceGroup(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    uuid: str | None = None
-    """The UUID of the service where the configuration was created."""
-    name: str | None = None
-    """The name of the service where the configuration was created."""
-    enabled: bool | None = None
-    """If the autoscale configuration is enabled."""
-    min_size: int | None = None
-    """
-    The minimum number of instances to keep running.
-    Only if enabled is true.
-    """
-    max_size: int | None = None
-    """
-    The maximum number of instances to keep running.
-    Only if enabled is true.
-    """
-    warmup_time_ms: int | None = None
-    """
-    The warmup time in seconds for new instances.
-    Only if enabled is true.
-    """
-    cooldown_time_ms: int | None = None
-    """
-    The cooldown time in seconds for the autoscale configuration.
-    Only if enabled is true.
-    """
-    template: ServiceGroupTemplate | None = None
-    """
-    The instance template used for the autoscale configuration.
-    Only if enabled is true.
-    """
-    policies: list[AutoscalePolicy] | None = None
-    """The policies applied to the autoscale configuration."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class GetCertificatesResponse(BaseModel):
-    """
-    The response message for getting one or more certificate(s) given their
-    UUID(s) or name(s).
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: GetCertificatesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class GetCertificatesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    certificates: list[Certificate] | None = None
-    """The certificate(s) which were retrieved by the request."""
+    """The human-readable name of the resource."""
 
 
 class GetCheckpointHistoryResponse(BaseModel):
-    """The response message for getting the checkpoint history."""
+    """
+    The response message for getting the checkpoint history of one or more
+    instance(s) given their UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -3119,22 +2644,18 @@ class GetCheckpointHistoryResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: GetCheckpointHistoryResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class GetCheckpointHistoryResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -3146,7 +2667,7 @@ class GetCheckpointHistoryResponseData(BaseModel):
 
 
 class GetCheckpointHistoryResponseInstanceHistory(BaseModel):
-    """History for a single instance."""
+    """Per-item result for a get checkpoint/instance history operation."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -3154,28 +2675,25 @@ class GetCheckpointHistoryResponseInstanceHistory(BaseModel):
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the instance."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the instance."""
+    """The human-readable name of the resource."""
     history: list[CheckpointHistoryEntry] | None = None
     """The checkpoint history entries."""
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
 
 
 class GetCheckpointInstancesResponse(BaseModel):
-    """The response message for getting one or more checkpoint instances."""
+    """
+    The response message for getting one or more checkpoint instance(s) given
+    their UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -3186,22 +2704,18 @@ class GetCheckpointInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: GetCheckpointInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class GetCheckpointInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -3212,60 +2726,16 @@ class GetCheckpointInstancesResponseData(BaseModel):
     """List of checkpoint instances that were retrieved during the operation."""
 
 
-class GetImagesRequestTagOrDigest(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    digest: str | None = None
-    tag: str | None = None
-
-
-class GetImagesResponse(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """An optional message providing additional information about the response."""
-    data: GetImagesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class GetImagesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    images: list[Image] | None = None
-    """The list of images."""
-
-
 class GetInstanceLogsByUUIDRequestBody(BaseModel):
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     offset: int | None = None
     """
-    The byte offset of the log output to receive.  A negative sign makes the
+    The byte offset of the log output to receive. A negative sign makes the
     offset relative to the end of the log.
     """
     limit: int | None = None
@@ -3273,31 +2743,25 @@ class GetInstanceLogsByUUIDRequestBody(BaseModel):
 
 
 class GetInstancesLogsRequestItem(BaseModel):
-    """A single item in the request."""
+    """A single request item to get an instance's logs."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     offset: int | None = None
     """
-    The byte offset of the log output to receive.  A negative sign makes the
+    The byte offset of the log output to receive. A negative sign makes the
     offset relative to the end of the log.
     """
     limit: int | None = None
     """The amount of bytes to return at most."""
-    uuid: str | None = None
-    """
-    The UUID of the instance to retrieve logs for.  Mutually exclusive with
-    name.
-    """
-    name: str | None = None
-    """
-    The name of the instance to retrieve logs for.  Mutually exclusive with
-    UUID.
-    """
 
 
 class GetInstancesLogsResponse(BaseModel):
@@ -3315,22 +2779,18 @@ class GetInstancesLogsResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: GetInstancesLogsResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class GetInstancesLogsResponseAvailable(BaseModel):
+    """Per-item result for a get instances logs operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -3344,6 +2804,8 @@ class GetInstancesLogsResponseAvailable(BaseModel):
 
 
 class GetInstancesLogsResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -3351,48 +2813,38 @@ class GetInstancesLogsResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[GetInstancesLogsResponseLoggedInstance] | None = None
-    """
-    The instance which this requested waited on.
-
-    Note: only one instance can be specified in the request, so this will
-    always contain a single entry.
-    """
 
 
 class GetInstancesLogsResponseLoggedInstance(BaseModel):
+    """Per-item result for a get instances logs operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the instance."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the instance."""
+    """The human-readable name of the resource."""
     output: str | None = None
     """Base64 encoded log output of the instance."""
     available: GetInstancesLogsResponseAvailable | None = None
     """Description of the log availability."""
     range: GetInstancesLogsResponseRange | None = None
     """
-    Description of the range that was returned.  Useful for requests with
+    Description of the range that was returned. Useful for requests with
     offset relative to end.
     """
     state: InstanceState | None = None
     """State of the instance when the logs were retrieved."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    status: ResponseStatus | None = None
-    """The status of the response."""
 
 
 class GetInstancesLogsResponseRange(BaseModel):
@@ -3410,8 +2862,8 @@ class GetInstancesLogsResponseRange(BaseModel):
 
 class GetInstancesMetricsResponse(BaseModel):
     """
-    The response message for getting the metrics of one or more instance(s)
-    given their UUID(s) or name(s).
+    The response message for getting the metrics of one or more instance(s) by
+    their UUID(s) or name(s).
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -3423,22 +2875,18 @@ class GetInstancesMetricsResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: GetInstancesMetricsResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class GetInstancesMetricsResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -3446,43 +2894,50 @@ class GetInstancesMetricsResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[GetInstancesMetricsResponseInstanceMetrics] | None = None
-    """
-    The instance which this requested metrics for.  Note: only one instance
-    can be specified in the request, so this will always contain a single
-    entry.
-    """
 
 
 class GetInstancesMetricsResponseInstanceMetrics(BaseModel):
+    """Per-item result for a get instances metrics operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
     rss_bytes: int | None = None
     """
     Resident set size of the VMM in bytes.
 
     The resident set size (RSS) specifies the amount of physical memory that
     has been touched by the instance and is currently reserved for the
-    instance on the Unikraft Cloud server.  The RSS grows until the instance
+    instance on the Unikraft Cloud server. The RSS grows until the instance
     has touched all memory assigned to it via the memory_mb setting and may
     also exceed this value as supporting services running outside the
-    instance acquire memory.  The RSS is different from the current amount of
+    instance acquire memory. The RSS is different from the current amount of
     memory allocated by the application, which is likely to fluctuate over
-    the lifetime of the application.  The RSS is not a cumulative metric.
+    the lifetime of the application. The RSS is not a cumulative metric.
     When the instance is stopped rss goes down to 0.
     """
     cpu_time_ms: int | None = None
     """Consumed CPU time in milliseconds."""
     boot_time_us: int | None = None
     """
-    The boot time of the instance in microseconds.  We take a pragmatic
-    approach is to define the boot time.  We calculate this as the difference
+    The boot time of the instance in microseconds. We take a pragmatic
+    approach is to define the boot time. We calculate this as the difference
     in time between the moment the virtualization toolstack is invoked to
     respond to a VM boot request and the moment the OS starts executing user
-    code (i.e., the end of the guest OS boot process).  This is essentially the
+    code (i.e., the end of the guest OS boot process). This is essentially the
     time that a user would experience in a deployment, minus the application
     initialization time, which we leave out since it is independent from the
     OS.
@@ -3490,9 +2945,9 @@ class GetInstancesMetricsResponseInstanceMetrics(BaseModel):
     net_time_us: int | None = None
     """
     This is the time it took for the user-level application to start listening
-    on a non-localhost port measured in microseconds.  This is the time from
+    on a non-localhost port measured in microseconds. This is the time from
     when the instance started until it reasonably ready to start responding to
-    network requests.  This is useful for measuring the time it takes for the
+    network requests. This is useful for measuring the time it takes for the
     instance to become operationally ready.
     """
     rx_bytes: int | None = None
@@ -3511,22 +2966,13 @@ class GetInstancesMetricsResponseInstanceMetrics(BaseModel):
     """Number of queued inbound connections and HTTP requests."""
     ntotal: int | None = None
     """Total number of inbound connections and HTTP requests handled."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    status: ResponseStatus | None = None
-    """The status of the response."""
 
 
 class GetInstancesResponse(BaseModel):
-    """The response after retrieving an instance by its name or UUID."""
+    """
+    The response message for getting one or more instance(s) given their
+    UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -3537,22 +2983,18 @@ class GetInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: GetInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class GetInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -3560,52 +3002,13 @@ class GetInstancesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[Instance] | None = None
-    """The instance(s) that were retrieved by the request."""
-
-
-class GetServiceGroupsResponse(BaseModel):
-    """
-    The response message for getting one or more service group(s) given their
-    UUID(s) or name(s).
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: GetServiceGroupsResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class GetServiceGroupsResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    service_groups: list[ServiceGroup] | None = None
-    """The service group(s) which were retrieved by the request."""
 
 
 class GetTemplateInstancesResponse(BaseModel):
-    """The response message for getting one or more template instances."""
+    """
+    The response message for getting one or more template instance(s) given
+    their UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -3616,22 +3019,18 @@ class GetTemplateInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: GetTemplateInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class GetTemplateInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -3639,142 +3038,6 @@ class GetTemplateInstancesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[Instance] | None = None
-    """List of template instances that were retrieved during the operation."""
-
-
-class GetTemplateVolumesResponse(BaseModel):
-    """The response message for getting one or more template volumes."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: GetTemplateVolumesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class GetTemplateVolumesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    volumes: list[Volume] | None = None
-    """The template volume(s) which were retrieved by the request."""
-
-
-class GetVolumesResponse(BaseModel):
-    """
-    The response message for getting one or more volume(s) given their
-    UUID(s) or name(s).
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: GetVolumesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class GetVolumesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    volumes: list[Volume] | None = None
-    """The volume(s) which were retrieved by the request."""
-
-
-class HealthzResponse(BaseModel):
-    """The response message for a health check of the platform."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """An optional message providing additional information about the response."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    data: HealthzResponseData | None = None
-    """The response data for this request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class HealthzResponseData(BaseModel):
-    """Additional data returned by the health check."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    checks: dict[str, str] | None = None
-    versions: dict[str, str] | None = None
-    license: DataLicense | None = None
-
-
-class Image(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    url: str | None = None
-    created_at: datetime | None = None
-    """The time the volume was created."""
-    initrd_or_rom: bool | None = None
-    size_in_bytes: int | None = None
-    args: list[str] | None = None
-    env: dict[str, str] | None = None
-    tags: list[str] | None = None
-    users: list[str] | None = None
 
 
 class ImageSpec(BaseModel):
@@ -3782,11 +3045,11 @@ class ImageSpec(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    url: str | None = None
+    url: str
     """The image URL"""
     credentials: str | None = None
     """
@@ -3803,25 +3066,8 @@ class ImageSpec(BaseModel):
     """
 
 
-class InlineFile(BaseModel):
-    """An inline file entry represents a single file within an image."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    path: str | None = None
-    """The file path within the image."""
-    encoding: InlineDataEncoding | None = None
-    """(Optional).  The encoding of the data field.  Defaults to "text"."""
-    data: str | None = None
-    """The file data, encoded according to the encoding field."""
-
-
 class Instance(BaseModel):
-    """An instance is a micro vm running an application."""
+    """Instance with per-item response envelope fields merged in."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -3829,67 +3075,60 @@ class Instance(BaseModel):
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
     uuid: str | None = None
-    """
-    The UUID of the instance.
-
-    This is a unique identifier for the instance that is generated when the
-    instance is created.  The UUID is used to reference the instance in API
-    calls and can be used to identify the instance in all API calls that
-    require an instance identifier.
-    """
+    """The UUID of the resource."""
     name: str | None = None
-    """
-    The name of the instance.
-
-    This is a human-readable name that can be used to identify the instance.
-    The name must be unique within the context of your account.  The name can
-    also be used to identify the instance in API calls.
-    """
+    """The human-readable name of the resource."""
     created_at: datetime | None = None
     """The time the instance was created."""
     state: InstanceState | None = None
     """
-    The state of the instance.  This indicates the current state of the
+    The state of the instance. This indicates the current state of the
     instance, such as whether it is running, stopped, or in an error state.
     """
     private_fqdn: str | None = None
     """
-    The internal hostname of the instance.  This address can be used privately
-    within the Unikraft Cloud network to access the instance.  It is not
+    The internal hostname of the instance. This address can be used privately
+    within the Unikraft Cloud network to access the instance. It is not
     accessible from the public Internet.
     """
     image: str | None = None
     """
-    The image used to create the instance.  This is a reference to the
+    The image used to create the instance. This is a reference to the
     Unikraft image that was used to create the instance.
     """
     memory_mb: int | None = None
     """
-    The amount of memory in megabytes allocated for the instance.  This is the
+    The amount of memory in megabytes allocated for the instance. This is the
     total amount of memory that is available to the instance for its
     operations.
     """
     vcpus: int | None = None
     """
-    The number of vCPUs allocated for the instance.  This is the total
+    The number of vCPUs allocated for the instance. This is the total
     number of virtual CPUs that are available to the instance for its
     operations.
     """
     args: list[str] | None = None
     """
-    The arguments passed to the instance when it was started.  This is a
+    The arguments passed to the instance when it was started. This is a
     list of command-line arguments that were provided to the instance at
-    startup.  These arguments can be used to configure the behavior of the
+    startup. These arguments can be used to configure the behavior of the
     instance and its applications.
     """
     env: dict[str, str] | None = None
     """Environment variables set for the instance."""
     start_count: int | None = None
     """
-    The total number of times the instance has been started.  This is a counter
+    The total number of times the instance has been started. This is a counter
     that increments each time the instance is started, regardless of whether it
-    was manually stopped or restarted.  This can be useful for tracking the
+    was manually stopped or restarted. This can be useful for tracking the
     usage of the instance over time and/or for debugging purposes.
 
     Not used for template instances.
@@ -3904,14 +3143,14 @@ class Instance(BaseModel):
     """
     started_at: datetime | None = None
     """
-    The time the instance was started.  This is the timestamp when the
+    The time the instance was started. This is the timestamp when the
     instance was last started.
     Not used for template instances.
     """
     stopped_at: datetime | None = None
     """
-    The time the instance was stopped.  This is the timestamp when the
-    instance was last stopped.  If the instance is currently running, this
+    The time the instance was stopped. This is the timestamp when the
+    instance was last stopped. If the instance is currently running, this
     field will be empty.
     Not used for template instances.
     """
@@ -3920,38 +3159,40 @@ class Instance(BaseModel):
     The total amount of time the instance has been running in milliseconds.
     Not used for template instances.
     """
+    retained_until: datetime | None = None
+    """Time when the instance will be permanently deleted (for deleted instances)."""
     vmm_start_time_us: int | None = None
     """
-    (Developer-only).  The time taken between the main controller and the
+    (Developer-only). The time taken between the main controller and the
     beginning of execution of the VMM (Virtual Machine Monitor) measured in
-    microseconds.  This field is primarily used for debugging and performance
+    microseconds. This field is primarily used for debugging and performance
     analysis purposes.
     Not used for template instances.
     """
     vmm_load_time_us: int | None = None
     """
-    (Developer-only).  The time it took the VMM (Virtual Machine Monitor) to
+    (Developer-only). The time it took the VMM (Virtual Machine Monitor) to
     load the instance's kernel and initramfs into VM memory measured in
-    microseconds.  This field is primarily used for debugging and performance
+    microseconds. This field is primarily used for debugging and performance
     analysis purposes.
     Not used for template instances.
     """
     vmm_ready_time_us: int | None = None
     """
-    (Developer-only).  The time taken for the VMM (Virtual Machine Monitor) to
-    become ready to execute the instance measured in microseconds.  This is the
+    (Developer-only). The time taken for the VMM (Virtual Machine Monitor) to
+    become ready to execute the instance measured in microseconds. This is the
     time from when the VMM started until it was ready to execute the instance's
-    code.  This field is primarily used for debugging and performance analysis
+    code. This field is primarily used for debugging and performance analysis
     purposes.
     Not used for template instances.
     """
     boot_time_us: int | None = None
     """
-    The boot time of the instance in microseconds.  We take a pragmatic
-    approach is to define the boot time.  We calculate this as the difference
+    The boot time of the instance in microseconds. We take a pragmatic
+    approach is to define the boot time. We calculate this as the difference
     in time between the moment the virtualization toolstack is invoked to
     respond to a VM boot request and the moment the OS starts executing user
-    code (i.e., the end of the guest OS boot process).  This is essentially the
+    code (i.e., the end of the guest OS boot process). This is essentially the
     time that a user would experience in a deployment, minus the application
     initialization time, which we leave out since it is independent from the
     OS.
@@ -3960,59 +3201,59 @@ class Instance(BaseModel):
     net_time_us: int | None = None
     """
     This is the time it took for the user-level application to start listening
-    on a non-localhost port measured in microseconds.  This is the time from
+    on a non-localhost port measured in microseconds. This is the time from
     when the instance started until it reasonably ready to start responding to
-    network requests.  This is useful for measuring the time it takes for the
+    network requests. This is useful for measuring the time it takes for the
     instance to become operationally ready.
     Not used for template instances.
     """
+    template_time_us: int | None = None
+    """Template creation time in microseconds."""
     stop_reason: int | None = None
     """
     The instance stop reason.
 
     Provides reason as to why an instance is stopped or in the process of
-    shutting down.  The stop reason is a bitmask that tells you the origin of
+    shutting down. The stop reason is a bitmask that tells you the origin of
     the shutdown:
 
-    | Bit     | 4          | 3          | 2          | 1          | 0 (LSB)
-    |
+    | Bit | 4 | 3 | 2 | 1 | 0 (LSB) |
     |---------|------------|------------|------------|------------|--------------|
-    | Purpose | [F]orced   | [U]ser     | [P]latform | [A]pp      | [K]ernel
-    |
+    | Purpose | [F]orced | [U]ser | [P]latform | [A]pp | [K]ernel |
 
-    - **Forced**:   This was a force stop.  A forced stop does not give the
-                    instance a chance to perform a clean shutdown.  Bits 0
-                    (Kernel) and 1 (App) can thus never be set for forced
-                    shutdowns.  Consequently, there won't be an `exit_code` or
-                    `stop_code`.
-    - **User**:     Stop initiated by user, e.g. via an API call.
+    - **Forced**: This was a force stop. A forced stop does not give the
+    instance a chance to perform a clean shutdown. Bits 0
+    (Kernel) and 1 (App) can thus never be set for forced
+    shutdowns. Consequently, there won't be an `exit_code` or
+    `stop_code`.
+    - **User**: Stop initiated by user, e.g. via an API call.
     - **Platform**: Stop initiated by platform, e.g. an autoscale policy.
-    - **App**:      The Application exited.  The `exit_code` field will be set.
-    - **Kernel**:   The kernel exited.  The `stop_code` field will be set.
+    - **App**: The Application exited. The `exit_code` field will be set.
+    - **Kernel**: The kernel exited. The `stop_code` field will be set.
 
     For example, the stop reason will contain the following values in the given
     scenarios:
 
     | Value | Bitmask | Aliases | Scenario |
     |-------|---------|---------|----------|
-    | 28    | `11100` | `FUP--` | Forced user-initiated shutdown. |
-    | 15    | `01111` | `-UPAK` | Regular user-initiated shutdown. The
-    application and kernel have exited. The exit_code and stop_code indicate if
-    the application and kernel shut down cleanly. |
-    | 13    | `01101` | `-UP-K` | The user initiated a shutdown but the
-    application was forcefully killed by the kernel during shutdown. This can be
-    the case if the image does not support a clean application exit or the
-    application crashed after receiving a termination signal. The exit_code
-    won’t be present in this scenario. |
-    | 7     | `00111` | `--PAK` | Unikraft Cloud initiated the shutdown, for
+    | 28 | `11100` | `FUP--` | Forced user-initiated shutdown. |
+    | 15 | `01111` | `-UPAK` | Regular user-initiated shutdown. The application
+    and kernel have exited. The exit_code and stop_code indicate if the
+    application and kernel shut down cleanly. |
+    | 13 | `01101` | `-UP-K` | The user initiated a shutdown but the application
+    was forcefully killed by the kernel during shutdown. This can be the case if
+    the image does not support a clean application exit or the application
+    crashed after receiving a termination signal. The exit_code won’t be present
+    in this scenario. |
+    | 7 | `00111` | `--PAK` | Unikraft Cloud initiated the shutdown, for
     example, due to scale-to-zero. The application and kernel have exited. The
     exit_code and stop_code indicate if the application and kernel shut down
     cleanly. |
-    | 3     | `00011` | `---AK` | The application exited. The exit_code and
+    | 3 | `00011` | `---AK` | The application exited. The exit_code and
     stop_code indicate if the application and kernel shut down cleanly. |
-    | 1     | `00001` | `----K` | The instance likely expierenced a fatal crash
-    and the stop_code contains more information about the cause of the crash. |
-    | 0     | `00000` | `-----` | The stop reason is unknown. |
+    | 1 | `00001` | `----K` | The instance likely expierenced a fatal crash and
+    the stop_code contains more information about the cause of the crash. |
+    | 0 | `00000` | `-----` | The stop reason is unknown. |
     Not used for template instances.
     """
     exit_code: int | None = None
@@ -4020,8 +3261,8 @@ class Instance(BaseModel):
     The application exit code.
 
     This is the code which the application returns upon leaving its main entry
-    point.  The encoding of the exit code is application specific.  See the
-    documentation of the application for more details.  Usually, an exit code
+    point. The encoding of the exit code is application specific. See the
+    documentation of the application for more details. Usually, an exit code
     of `0` indicates success / no failure.
     Not used for template instances.
     """
@@ -4033,20 +3274,20 @@ class Instance(BaseModel):
     application.
 
     ```
-    MSB                                                     LSB
+    MSB LSB
     ┌──────────────┬──────────┬──────────┬───────────┬────────┐
-    │ 31 ────── 24 │ 23 ── 16 │    15    │ 14 ──── 8 │ 7 ── 0 │
+    │ 31 ────── 24 │ 23 ── 16 │ 15 │ 14 ──── 8 │ 7 ── 0 │
     ├──────────────┼──────────┼──────────┼───────────┼────────┤
-    │ reserved[^1] │ errno    │ shutdown │ initlevel │ reason │
+    │ reserved[^1] │ errno │ shutdown │ initlevel │ reason │
     └──────────────┴──────────┴──────────┴───────────┴────────┘
     ```
 
-    - **errno**:     The application errno, using Linux's errno.h values.
-                     (Optional, can be 0.)
-    - **shutdown**:  Whether the shutdown originated from the inittable (0) or
-                     from the termtable (1).
+    - **errno**: The application errno, using Linux's errno.h values.
+    (Optional, can be 0.)
+    - **shutdown**: Whether the shutdown originated from the inittable (0) or
+    from the termtable (1).
     - **initlevel**: The initlevel at the time of the stop.
-    - **reason**:    The reason for the stop.  See `StopCodeReason`.
+    - **reason**: The reason for the stop. See `StopCodeReason`.
 
     [^1]: Reserved for future use.
     Not used for template instances.
@@ -4056,27 +3297,27 @@ class Instance(BaseModel):
     The restart configuration for the instance.
 
     When an instance stops either because the application exits or the instance
-    crashes, Unikraft Cloud can auto-restart your instance.  Auto-restarts are
+    crashes, Unikraft Cloud can auto-restart your instance. Auto-restarts are
     performed according to the restart policy configured for a particular
     instance.
 
     The policy can have the following values:
 
-    | Policy       | Description |
+    | Policy | Description |
     |--------------|-------------|
-    | `never`      | Never restart the instance (default). |
-    | `always`     | Always restart the instance when the stop is initiated from
+    | `never` | Never restart the instance (default). |
+    | `always` | Always restart the instance when the stop is initiated from
     within the instance (i.e., the application exits or the instance crashes). |
     | `on-failure` | Only restart the instance if it crashes. |
 
     When an instance stops, the stop reason and the configured restart policy
-    are evaluated to decide if a restart should be performed.  Unikraft Cloud
+    are evaluated to decide if a restart should be performed. Unikraft Cloud
     uses an exponential back-off delay (immediate, 5s, 10s, 20s, 40s, ..., 5m)
-    to slow down restarts in tight crash loops.  If an instance runs without
+    to slow down restarts in tight crash loops. If an instance runs without
     problems for 10s the back-off delay is reset and the restart sequence ends.
 
     The `restart.attempt` attribute reported in counts the number of restarts
-    performed in the current sequence.  The `restart.next_at` field indicates
+    performed in the current sequence. The `restart.next_at` field indicates
     when the next restart will take place if a back-off delay is in effect.
 
     A manual start or stop of the instance aborts the restart sequence and
@@ -4089,24 +3330,26 @@ class Instance(BaseModel):
     With conventional cloud platforms you need to keep at least one instance
     running at all times to be able to respond to incoming requests. Performing
     a just-in-time cold boot is simply too time-consuming and would create a
-    response latency of multiple seconds.  This is not the case with Unikraft
-    Cloud.  Instances on Unikraft Cloud are able to cold boot within
+    response latency of multiple seconds. This is not the case with Unikraft
+    Cloud. Instances on Unikraft Cloud are able to cold boot within
     milliseconds, which allows us to perform low-latency scale-to-zero.
 
     To enable scale-to-zero for an instance it is sufficient to add a
-    `scale_to_zero` configuration block.  Unikraft Cloud will then put the
+    `scale_to_zero` configuration block. Unikraft Cloud will then put the
     instance into standby if there is no traffic to your service within the
-    window of a cooldown period.  When there is new traffic coming in, it is
+    window of a cooldown period. When there is new traffic coming in, it is
     automatically started again.
 
     If you have a heavyweight application that takes long to cold boot or has
     bad first request latency (e.g., with JIT compilation) consider to enable
     stateful scale-to-zero.
     """
-    volumes: list[InstanceVolume] | None = None
-    """The list of volumes attached to the instance."""
     service_group: InstanceServiceGroup | None = None
     """The service group configuration for the instance."""
+    services: list[str] | None = None
+    """Services exposed by this instance (format: "protocol:port")."""
+    volumes: list[InstanceVolume] | None = None
+    """The list of volumes attached to the instance."""
     network_interfaces: list[InstanceNetworkInterface] | None = None
     """
     The network interfaces of the instance.
@@ -4114,27 +3357,24 @@ class Instance(BaseModel):
     """
     tags: list[str] | None = None
     """The tags associated with the instance."""
-    status: ResponseStatus | None = None
+    annotations: dict[str, str] | None = None
     """
-    An optional field representing the status of the request.  This field is
-    only set when this message object is used as a response message.
-    """
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
+    The annotations associated with the instance.
+
+    Keys follow the Kubernetes annotation key syntax, `[<prefix>/]<name>`: the
+    optional prefix is a non-wildcard DNS subdomain of at most 253 characters,
+    and the name is at most 63 characters of `[-_.a-zA-Z0-9]` starting and
+    ending with an alphanumeric. Values are unconstrained apart from ASCII
+    control characters, which are rejected because they would corrupt the
+    console log output annotations can be forwarded to.
+
+    An instance holds at most 256 annotations.
     """
     snapshot: InstanceSnapshot | None = None
     """The snapshot of the instance, if exists."""
     delete_lock: bool | None = None
     """If set to true, the instance cannot be deleted until the lock is removed."""
+    features: list[InstanceFeature] | None = None
     restart: InstanceRestartAttempt | None = None
     """
     The current restart attempt for the instance.
@@ -4150,19 +3390,19 @@ class Instance(BaseModel):
     """
     plugins: list[InstancePlugin] | None = None
     """
-    Plugins attached to the instance.  Plugins let you attach small helper
+    Plugins attached to the instance. Plugins let you attach small helper
     programs to an instance and reach each one over a direct, authenticated
-    HTTP endpoint.  Each plugin loads from its own ROM image, mounts at
+    HTTP endpoint. Each plugin loads from its own ROM image, mounts at
     `/uk/plugins/<plugin_name>`, and is reachable at
-    `.../v1/instances/<uuid>/plugins/<plugin_name>/<path>`.  At most 8 plugins
-    may be attached to an instance.
+    `.../v1/instances/<uuid>/plugins/<plugin_name>/<path>`. At most 8
+    plugins may be attached to an instance.
     """
     schedules: list[Schedule] | None = None
     """
     Scheduled operations for this instance.
 
     Each schedule defines a calendar expression and an action (`start`,
-    `stop`, `delete`, or `exec`) to perform at matching times.  When the
+    `stop`, `delete`, or `exec`) to perform at matching times. When the
     action is `exec`, the `args` field of the schedule specifies the command
     to run inside the instance.
     """
@@ -4171,17 +3411,17 @@ class Instance(BaseModel):
     Automatic delete-on-idle/request-limit configuration.
     Not used for template instances.
     """
-    template_autokill: InstanceTemplateAutokill | None = None
-    """
-    Template-specific automatic delete-on-idle configuration.
-    Not used for non-template instances.
-    """
     updates: list[InstancePendingUpdate] | None = None
     """Queued property changes awaiting application."""
     sched_priority: SchedPriority | None = None
     """
     The scheduling priority for the instance. Only present for
     users with scheduling priority override permissions.
+    """
+    template_autokill: InstanceTemplateAutokill | None = None
+    """
+    Template-specific automatic delete-on-idle configuration.
+    Not used for non-template instances.
     """
     checkpoint_autokill: InstanceTemplateAutokill | None = None
     """
@@ -4194,13 +3434,19 @@ class Instance(BaseModel):
     """The default gateway configured inside the guest."""
     nameserver: str | None = None
     """The DNS resolver configured inside the guest."""
+    type: InstanceType | None = None
+    """The type of virtual machine used to run the instance."""
+    gpus: list[InstanceGpu] | None = None
+    """
+    GPUs attached to the instance. Only present for instances of type
+    `full`.
+    """
 
 
 class InstanceAutokill(BaseModel):
     """
     Automatic delete-on-idle/request-limit configuration for non-template
-    instances.
-    Not used for template instances.
+    instances. Not used for template instances.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -4221,33 +3467,8 @@ class InstanceAutokill(BaseModel):
     """
 
 
-class InstanceCreateArgsInstanceCreateRequestRoms(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    name: str | None = None
-    """The name of the ROM to use for the autoscale configuration."""
-    image: str | ImageSpec | None = None
-    """
-    (Optional).  The image of the ROM to use for the autoscale
-    configuration.  Mutually exclusive with `files`.  Accepts either a
-    plain image reference string (`"nginx:latest"`) or an object carrying
-    additional pull configuration
-    (`{"url": "nginx:latest", "pull_policy": "always"}`).
-    """
-    files: list[InlineFile] | None = None
-    """
-    (Optional).  Inline files to use as the ROM content.  When specified,
-    the platform creates an EROFS image from the provided files.
-    Mutually exclusive with `image`.
-    """
-
-
-class InstanceNetworkInterface(BaseModel):
-    """An instance network interface."""
+class InstanceGpu(BaseModel):
+    """A GPU attached to the instance."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -4256,10 +3477,24 @@ class InstanceNetworkInterface(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     uuid: str | None = None
+    """The UUID of the GPU."""
+    model: str | None = None
     """
-    The UUID of the network interface. This is a unique identifier for the
-    network interface that is generated when the instance is created.
+    The GPU model, given as its PCI vendor and device ID in the form
+    `<vendor>:<device>`.
     """
+
+
+class InstanceNetworkInterface(BaseModel):
+    """A network interface attached to an instance."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
     private_ip: str | None = None
     """
     The private IP address of the network interface. This is the internal IP
@@ -4279,8 +3514,8 @@ class InstanceNetworkInterface(BaseModel):
     autoconfig: bool | None = None
     """
     Whether the interface is automatically configured inside the guest
-    (IP address, routes, etc.).  When absent or true, autoconfiguration
-    is enabled.  Present and false when the guest is expected to
+    (IP address, routes, etc.). When absent or true, autoconfiguration
+    is enabled. Present and false when the guest is expected to
     configure the interface manually.
     """
     relay: InstanceNetworkInterfaceRelay | None = None
@@ -4308,7 +3543,7 @@ class InstanceNetworkInterfaceRelay(BaseModel):
 
 
 class InstancePendingUpdate(BaseModel):
-    """A queued property change awaiting application (typically on next restart)."""
+    """A queued property change awaiting application on an instance."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -4321,22 +3556,19 @@ class InstancePendingUpdate(BaseModel):
     op: MutableInstanceOperation | None = None
     """The patch operation type."""
     value: Any | None = None
-    """
-    The new value for the property.  Type depends on the property being
-    updated.
-    """
+    """The new value for the property. Type depends on the property being updated."""
     status: InstancePendingUpdateStatus | None = None
     """The status of this update."""
     error: str | None = None
-    """Error message.  Only present when status is "failed"."""
+    """Error message. Only present when status is "failed"."""
 
 
 class InstancePlugin(BaseModel):
     """
     A helper program attached to the instance and reachable over a direct,
-    authenticated HTTP endpoint.  A plugin runs inside the instance next to the
-    main application, loads from its own ROM image, and answers requests that
-    the Unikraft Cloud API forwards to it.
+    authenticated HTTP endpoint. A plugin runs inside the instance next to
+    the main application, loads from its own ROM image, and answers requests
+    that the Unikraft Cloud API forwards to it.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -4347,28 +3579,28 @@ class InstancePlugin(BaseModel):
 
     name: str | None = None
     """
-    The plugin name.  It becomes the `<plugin_name>` segment in the plugin
-    endpoint (`.../plugins/<plugin_name>/<path>`).  A plugin name has a
+    The plugin name. It becomes the `<plugin_name>` segment in the plugin
+    endpoint (`.../plugins/<plugin_name>/<path>`). A plugin name has a
     maximum length of 63 characters and contains only letters (`a`-`z`,
     `A`-`Z`), digits (`0`-`9`), hyphen (`-`), and underscore (`_`).
     """
-    rom: str | None = None
+    image: str | None = None
     """
-    The plugin's ROM image, given as an image reference string such as
-    `user/myplugin:latest`.  The platform loads the image, mounts it at
-    `/uk/plugins/<plugin_name>`, and runs its `init` program when the plugin
-    starts.
+    The plugin's image, given as an image reference string such as
+    `user/myplugin:latest`. The platform loads the image, mounts it at
+    `/uk/plugins/<plugin_name>`, and runs its `init` program when the
+    plugin starts.
     """
     config: Any | None = None
     """
-    (Optional).  Arbitrary JSON configuration that the platform passes to the
-    plugin's `init` program on `STDIN`.  Any JSON value works, including a
-    string, a number, or an object.
+    Arbitrary JSON configuration that the platform passes to the plugin's
+    `init` program on `STDIN`. Any JSON value works, including a string, a
+    number, or an object.
     """
 
 
 class InstanceRestartAttempt(BaseModel):
-    """Records the current restart attempt of an instance."""
+    """Restart attempt information for an instance."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -4386,7 +3618,7 @@ class InstanceRestartAttempt(BaseModel):
 
 
 class InstanceRom(BaseModel):
-    """Read-Only Memory (ROM) blob to attach to the instance."""
+    """A ROM attached to an instance."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -4398,22 +3630,22 @@ class InstanceRom(BaseModel):
     """The name of the ROM to use for the instance configuration."""
     image: str | None = None
     """
-    (Optional).  The image of the ROM to use for the instance configuration.
-    Mutually exclusive with `files`.
+    The image of the ROM to use for the instance configuration. Mutually
+    exclusive with `files`.
     """
     at: str | None = None
     """
-    (Optional).  The path at which the ROM should be automatically mounted
-    inside the instance.  When set, the platform mounts the ROM device at
-    the specified path so the guest does not need to mount it manually.
-    When omitted, the ROM is exposed as a raw block device and the guest is
-    responsible for mounting it.
+    The path at which the ROM should be automatically mounted inside the
+    instance. When set, the platform mounts the ROM device at the specified
+    path so the guest does not need to mount it manually. When omitted, the
+    ROM is exposed as a raw block device and the guest is responsible for
+    mounting it.
     """
     files: list[InlineFile] | None = None
     """
-    (Optional).  Inline files to use as the ROM content.  When specified,
-    the platform creates an EROFS image from the provided files.
-    Mutually exclusive with `image`.
+    Inline files to use as the ROM content. When specified, the platform
+    creates an EROFS image from the provided files. Mutually exclusive with
+    `image`.
     """
 
 
@@ -4422,9 +3654,8 @@ class InstanceScaleToZero(BaseModel):
     Scale-to-zero defines the configuration for scaling the instance to zero.
     When an instance is scaled-to-zero it can be either stopped (and fully
     shutdown) or paused wherein the state of the instance is preserved (e.g.,
-    RAM
-    contents) and the instance can be resumed later without losing its state,
-    i.e. "stateful".
+    RAM contents) and the instance can be resumed later without losing its
+    state, i.e. "stateful".
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -4441,15 +3672,15 @@ class InstanceScaleToZero(BaseModel):
     """
     Whether the instance should be stateful when scaled to zero. If set to
     true, the instance will retain its state (e.g., RAM contents) when scaled
-    to zero.  This is useful for instances that need to maintain their state
-    across scale-to-zero operations.  If set to false, the instance will lose
+    to zero. This is useful for instances that need to maintain their state
+    across scale-to-zero operations. If set to false, the instance will lose
     its state when scaled to zero, and it will be restarted from scratch when
     scaled back up.
     """
     cooldown_time_ms: int | None = None
     """
     The cooldown time in milliseconds before the instance can be scaled to
-    zero again.  This is useful to prevent rapid scaling to zero and back up,
+    zero again. This is useful to prevent rapid scaling to zero and back up,
     which can lead to performance issues or resource exhaustion.
     """
     notify_time_ms: int | None = None
@@ -4462,11 +3693,10 @@ class InstanceScaleToZero(BaseModel):
 
 class InstanceServiceGroup(BaseModel):
     """
-    The service group configuration for the instance.
-
-    This is a reference to the service group that the instance is part of.  The
-    service group defines the services (e.g. ports, connection handling) that
-    the instance exposes and how they are configured.
+    The service group configuration for the instance. This is a reference to the
+    service group that the instance is part of. The service group defines the
+    services (e.g. ports, connection handling) that the instance exposes and how
+    they are configured.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -4476,28 +3706,15 @@ class InstanceServiceGroup(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     uuid: str | None = None
-    """
-    The UUID of the service group.
-
-    This is a unique identifier for the service group that is generated when
-    the service is created.  The UUID is used to reference the service group
-    in API calls and can be used to identify the service in all API calls
-    that require an service identifier.
-    """
+    """The UUID of the resource."""
     name: str | None = None
-    """
-    The name of the service group.
-
-    This is a human-readable name that can be used to identify the service
-    group.  The name is unique within the context of your account.  The name
-    can also be used to identify the service group in API calls.
-    """
+    """The human-readable name of the resource."""
     domains: list[ServiceGroupInstanceDomain] | None = None
     """The domain configuration for the service group."""
 
 
 class InstanceSnapshot(BaseModel):
-    """The snapshot UUID of the instance."""
+    """A snapshot reference for an instance."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -4506,11 +3723,10 @@ class InstanceSnapshot(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     uuid: str | None = None
-    """The UUID of the snapshot."""
 
 
 class InstanceTemplateAutokill(BaseModel):
-    """Automatic delete-on-idle configuration for template instances."""
+    """Autokill configuration for a template instance."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -4527,10 +3743,9 @@ class InstanceTemplateAutokill(BaseModel):
 
 class InstanceVolume(BaseModel):
     """
-    A volume defines a storage which can be attached to the instance.
-
-    Volumes can be used to store persistent data which should remain available
-    even if the instance is stopped or restarted.
+    A volume defines a storage which can be attached to the instance. Volumes
+    can be used to store persistent data which should remain available even if
+    the instance is stopped or restarted.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -4540,25 +3755,12 @@ class InstanceVolume(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     uuid: str | None = None
-    """
-    The UUID of the volume.
-
-    This is a unique identifier for the volume that is generated when the
-    volume is created.  The UUID is used to reference the volume in API calls
-    and can be used to identify the volume in all API calls that require a
-    volume identifier.
-    """
+    """The UUID of the resource."""
     name: str | None = None
-    """
-    The name of the volume.
-
-    This is a human-readable name that can be used to identify the volume.
-    The name must be unique within the context of your account.  The name can
-    also be used to identify the volume in API calls.
-    """
+    """The human-readable name of the resource."""
     at: str | None = None
     """
-    The mount point of the volume in the instance.  This is the directory in
+    The mount point of the volume in the instance. This is the directory in
     the instance where the volume will be mounted.
     """
     readonly: bool | None = None
@@ -4570,30 +3772,15 @@ class ItemAutokill(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     time_ms: int | None = None
     """
-    Time in milliseconds after the template was last used for cloning
-    before it is deleted. A value of 0 disables template autokill.
+    Time in milliseconds after the template was last used for cloning before
+    it is deleted. A value of 0 disables template autokill.
     """
-
-
-class NameOrUUID(BaseModel):
-    """An identifier for a resource.  Either a name or a UUID."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    uuid: str | None = None
-    """The UUID of the resource."""
-    name: str | None = None
-    """The name of the resource."""
 
 
 class NetworkInterfaceRelay(BaseModel):
@@ -4601,8 +3788,8 @@ class NetworkInterfaceRelay(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     relay_dns: bool | None = None
@@ -4612,153 +3799,9 @@ class NetworkInterfaceRelay(BaseModel):
     Defaults to true.
     """
     uuid: str | None = None
-    """
-    UUID of the existing interface to relay through.
-    Mutually exclusive with name.
-    """
+    """The UUID of the resource."""
     name: str | None = None
-    """
-    Name of the existing interface to relay through.
-    Mutually exclusive with UUID.
-    """
-
-
-class Quotas(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    uuid: str | None = None
-    """The UUID of the quota."""
-    used: QuotasStats | None = None
-    """Used quota"""
-    hard: QuotasStats | None = None
-    """Configured quota limits"""
-    limits: QuotasLimits | None = None
-    """Additional limits"""
-    status: ResponseStatus | None = None
-    """
-    An optional field representing the status of the request.  This field is
-    only set when this message object is used as a response message.
-    """
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
-
-
-class QuotasLimits(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    min_memory_mb: int | None = None
-    """Minimum amount of memory assigned to live instances in megabytes"""
-    max_memory_mb: int | None = None
-    """Maximum amount of memory assigned to live instances in megabytes"""
-    min_volume_mb: int | None = None
-    """Minimum size of a volume in megabytes"""
-    max_volume_mb: int | None = None
-    """Maximum size of a volume in megabytes"""
-    min_autoscale_size: int | None = None
-    """Minimum size of an autoscale group"""
-    max_autoscale_size: int | None = None
-    """Maximum size of an autoscale group"""
-    min_vcpus: int | None = None
-    """Minimum number of vCPUs"""
-    max_vcpus: int | None = None
-    """Maximum number of vCPUs"""
-
-
-class QuotasResponse(BaseModel):
-    """The response message for getting the quota of a user given their UUID."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: QuotasResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class QuotasResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    quotas: list[Quotas] | None = None
-    """The quota(s) which were retrieved by the request."""
-
-
-class QuotasStats(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    instances: int | None = None
-    """Number of instances"""
-    live_instances: int | None = None
-    """Number of instances that are not in the `stopped` state"""
-    live_vcpus: int | None = None
-    """Number of vCPUs"""
-    live_memory_mb: int | None = None
-    """
-    Amount of memory assigned to instances that are not in the `stopped`
-    state in megabytes
-    """
-    service_groups: int | None = None
-    """Number of services"""
-    services: int | None = None
-    """Number of published network ports over all existing services"""
-    volumes: int | None = None
-    """Number of volumes"""
-    total_volume_mb: int | None = None
-    """Total size of all volumes in megabytes"""
-
-
-class ResponseError(BaseModel):
-    """The error response message for an API request."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: int | None = None
-    """The HTTP status code of the error."""
+    """The name of the resource."""
 
 
 class Schedule(BaseModel):
@@ -4768,10 +3811,12 @@ class Schedule(BaseModel):
     Each schedule specifies a name, a calendar expression following systemd
     calendar event syntax, and an action (start, stop, delete, or exec).
 
-    Calendar expressions format: [weekday] [[year-]month-day]
-    [hour:minute[:second]]
+    Calendar expressions format:
+
+    [weekday] [[year-]month-day] [hour:minute[:second]]
 
     Supported syntax:
+
     - `*` - Any value
     - `5` - Exact value
     - `1..5` - Range
@@ -4808,7 +3853,7 @@ class Schedule(BaseModel):
     The timestamp of when the next scheduled action will occur.
 
     This field is populated only in responses (not settable in requests).
-    Unix timestamp in seconds.  Omitted if no next execution is scheduled.
+    Omitted if no next execution is scheduled.
     """
     args: list[str] | None = None
     """
@@ -4819,214 +3864,15 @@ class Schedule(BaseModel):
     """
 
 
-class Service(BaseModel):
-    """
-    A service connects a public-facing port to an internal destination port on
-    which an application instance listens on.  Additional handlers can be
-    defined
-    for each published port in order to define how the service will handle
-    incoming connections and forward traffic from the Internet to your
-    application.  For example, a service can be configured to terminate TLS
-    connections, redirect HTTP traffic, or enable HTTP mode for load balancing.
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    port: int | None = None
-    """
-    This is the public-facing port that the service will be accessible from
-    on the Internet.
-    """
-    destination_port: int | None = None
-    """
-    The port number that the instance is listening on.  This is the internal
-    port which Unikraft Cloud will forward traffic to.
-    """
-    handlers: list[ConnectionHandler] | None = None
-    """
-    Connection handlers to use for the service.  Handlers define how the
-    service will handle incoming connections and forward traffic from the
-    Internet to your application.  For example, a service can be configured
-    to terminate TLS connections, redirect HTTP traffic, or enable HTTP mode
-    for load balancing.  You configure the handlers for every published
-    service port individually.
-    """
-
-
-class ServiceGroup(BaseModel):
-    """
-    A service group on Unikraft Cloud is used to describe how your application
-    exposes its functionality to the outside world.  Once defined, assigning an
-    instance to the service will make it accessible from the Internet.
-
-    An application, running as an instance, may expose one or more ports, e.g.
-    it
-    listens on port 80 because your application exposes a HTTP web service.
-    This,
-    along with a set of additional metadata defines how the "service" is
-    configured and accessed.  For example, a service may be configured to use
-    TLS, or be bound to a specific domain name.
-
-    When an instance is assigned to a service group, it immediately becomes
-    accessible over the Internet on the exposed public port, using the set DNS
-    name, and is routed to the set destination port.
-
-    Note: If you do not specify a DNS name when you create a service and you
-    indicate that the application exposes some ports, Unikraft Cloud will
-    generates a random DNS name for you.  Unikraft Cloud also supports custom
-    domains like www.example.com and wildcard domains like *.example.com.
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    uuid: str | None = None
-    """
-    The UUID of the service group.
-
-    This is a unique identifier for the service group that is generated when
-    the service group is created.  The UUID is used to reference the service in
-    API calls and can be used to identify the service group in all API calls
-    that require an identifier.
-    """
-    name: str | None = None
-    """
-    The name of the service group.
-
-    This is a human-readable name that can be used to identify the service
-    group. The name must be unique within the context of your account.  The
-    name can also be used to identify the service in API calls.
-    """
-    created_at: datetime | None = None
-    """The time the service was created."""
-    persistent: bool | None = None
-    """
-    Indicates if the service will stay remain even after the last instance
-    detached.  If this is set to false, the service will be deleted when the
-    last instance detached from it.  If this is set to true, the service will
-    remain and can be reused by other instances.  This is useful if you want to
-    keep the service configuration, e.g., the published ports, handlers, and
-    domains, even if there are no instances assigned to it.
-    """
-    autoscale: bool | None = None
-    """
-    Indicates if the service has autoscale enabled.  See the associated
-    autoscale documentation for more information about how to set this up.
-    Autoscale policies can be set up after the service has been created.
-    """
-    soft_limit: int | None = None
-    """
-    The soft limit is used by the Unikraft Cloud load balancer to decide when
-    to wake up another standby instance.  For example, if the soft limit is set
-    to 5 and the service consists of 2 standby instances, one of the instances
-    receives up to 5 concurrent requests.  The 6th parallel requests wakes up
-    the second instance.  If there are no more standby instances to wake up,
-    the number of requests assigned to each instance will exceed the soft
-    limit.  The load balancer makes sure that when the number of in-flight
-    requests goes down again, instances are put into standby as fast as
-    possible.
-    """
-    hard_limit: int | None = None
-    """
-    The hard limit defines the maximum number of concurrent requests that an
-    instance assigned to the this service can handle.  The load balancer will
-    never assign more requests to a single instance.  In case there are no
-    other instances available, excess requests fail (i.e., they are blocked and
-    not queued).
-    """
-    services: list[Service] | None = None
-    """
-    List of published network ports for this service and the destination port
-    to which Unikraft Cloud will forward traffic to.  Additional handlers can
-    be defined for each published port in order to define how the service will
-    handle incoming connections and forward traffic from the Internet to your
-    application.  For example, a service can be configured to terminate TLS
-    connections, redirect HTTP traffic, or enable HTTP mode for load balancing.
-    """
-    domains: list[Domain] | None = None
-    """
-    List of domains associated with the service.  Domains are used to access
-    the service over the Internet.
-    """
-    instances: list[ServiceGroupInstance] | None = None
-    """List of instances assigned to the service."""
-    status: ResponseStatus | None = None
-    """
-    An optional field representing the status of the request.  This field is
-    only set when this message object is used as a response message.
-    """
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
-    autokill: ServiceGroupAutokill | None = None
-    """Automatic delete-on-idle configuration."""
-
-
-class ServiceGroupAutokill(BaseModel):
-    """Automatic delete-on-idle configuration for service groups."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    time_ms: int | None = None
-    """
-    Time in milliseconds after the service group becomes empty before it is
-    deleted. A value of 0 disables autokill.
-    """
-
-
-class ServiceGroupInstance(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    uuid: str | None = None
-    """
-    The UUID of the instance.  This is a unique identifier for the instance
-    that is generated when the instance is created.  The UUID is used to
-    reference the instance in API calls and can be used to identify the
-    instance in all API calls that require an instance identifier.
-    """
-    name: str | None = None
-    """
-    The name of the instance.  This is a human-readable name that can be used
-    to identify the instance.  The name must be unique within the context of
-    your account.  If no name is specified, a random name is generated for
-    you.  The name can also be used to identify the instance in API calls.
-    """
-
-
 class ServiceGroupInstanceDomain(BaseModel):
     """
-    The domain configuration for the service group.
-
-    Domain names are completely specified with all labels in the hierarchy of
-    the DNS, having no parts omitted.  The domain can be associated with an
-    existing certificate by specifying the certificate's name or UUID.  If no
-    certificate is specified and a FQDN is provided, Unikraft Cloud will
-    automatically generate a new certificate for the domain based on Let's
-    Encrypt and seek to accomplish a DNS-01 challenge.
+    The domain configuration for the service group. Domain names are completely
+    specified with all labels in the hierarchy of the DNS, having no parts
+    omitted. The domain can be associated with an existing certificate by
+    specifying the certificate's name or UUID. If no certificate is specified
+    and a FQDN is provided, Unikraft Cloud will automatically generate a new
+    certificate for the domain based on Let's Encrypt and seek to accomplish a
+    DNS-01 challenge.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -5047,24 +3893,11 @@ class ServiceGroupInstanceDomain(BaseModel):
     """
     The certificate associated with the domain.
 
-    The certificate is used to secure the domain with TLS/SSL.  If no
+    The certificate is used to secure the domain with TLS/SSL. If no
     certificate is specified, Unikraft Cloud will automatically generate a
     new certificate for the domain based on Let's Encrypt and seek to
     accomplish a DNS-01 challenge.
     """
-
-
-class ServiceGroupTemplate(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    name: str | None = None
-    """The name of the template used for the autoscale configuration."""
-    uuid: str | None = None
-    """The UUID of the template used for the autoscale configuration."""
 
 
 class StartInstanceByUUIDRequestBody(BaseModel):
@@ -5072,23 +3905,23 @@ class StartInstanceByUUIDRequestBody(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     wait_timeout_ms: int | None = None
     """
-    Deprecated: Use `timeout_s` instead.  Timeout in milliseconds to
-    wait for the instance to reach running state.  If `timeout_s` is
+    Deprecated: Use `timeout_s` instead. Timeout in milliseconds to
+    wait for the instance to reach running state. If `timeout_s` is
     not set, this value is converted by rounding up to the next full
-    second.  No wait performed for a value of 0.
+    second. No wait performed for a value of 0.
     """
     timeout_s: int | None = None
     """
     Timeout in seconds to wait for the instance to reach running
-    state.  If you start your instance, you can wait for it to
+    state. If you start your instance, you can wait for it to
     finish starting with a blocking API call if you specify a wait
-    timeout greater than zero.  No wait performed for a value of 0.
+    timeout greater than zero. No wait performed for a value of 0.
     """
 
 
@@ -5097,35 +3930,34 @@ class StartInstancesRequestItem(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     wait_timeout_ms: int | None = None
     """
-    Deprecated: Use `timeout_s` instead.  Timeout in milliseconds to
-    wait for the instance to reach running state.  If `timeout_s` is
+    Deprecated: Use `timeout_s` instead. Timeout in milliseconds to
+    wait for the instance to reach running state. If `timeout_s` is
     not set, this value is converted by rounding up to the next full
-    second.  No wait performed for a value of 0.
+    second. No wait performed for a value of 0.
     """
     timeout_s: int | None = None
     """
     Timeout in seconds to wait for the instance to reach running
-    state.  If you start your instance, you can wait for it to
+    state. If you start your instance, you can wait for it to
     finish starting with a blocking API call if you specify a wait
-    timeout greater than zero.  No wait performed for a value of 0.
+    timeout greater than zero. No wait performed for a value of 0.
     """
-    uuid: str | None = None
-    """The UUID of the instance to start.  Mutually exclusive with name."""
-    name: str | None = None
-    """The name of the instance to start.  Mutually exclusive with UUID."""
 
 
 class StartInstancesResponse(BaseModel):
     """
     The response message for starting one or more instance(s) given their
-    UUID(s)
-    or name(s).
+    UUID(s) or name(s).
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -5137,22 +3969,18 @@ class StartInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: StartInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class StartInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -5160,10 +3988,11 @@ class StartInstancesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[StartInstancesResponseStartedInstance] | None = None
-    """The instance(s) which were started by the request."""
 
 
 class StartInstancesResponseStartedInstance(BaseModel):
+    """Per-item result for a start instances operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -5171,28 +4000,19 @@ class StartInstancesResponseStartedInstance(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     status: ResponseStatus | None = None
-    """
-    Indicates whether the start operation was successful or not for this
-    instance.
-    """
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the instance which was deleted."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the instance which was deleted."""
+    """The human-readable name of the resource."""
     state: str | None = None
     """The current state of the instance after this request."""
     previous_state: str | None = None
-    """The previous state of the instance before it was deleted."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """The previous state of the instance before it was started."""
 
 
 class StopInstanceByUUIDRequestBody(BaseModel):
@@ -5200,8 +4020,8 @@ class StopInstanceByUUIDRequestBody(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     force: bool | None = None
@@ -5209,20 +4029,20 @@ class StopInstanceByUUIDRequestBody(BaseModel):
     drain_timeout_ms: int | None = None
     """
     Timeout for draining connections in milliseconds.
-    No draining will occur if set to 0.  The instance
+    No draining will occur if set to 0. The instance
     does not receive new connections in the draining
-    phase.  The instance is stopped when the last
+    phase. The instance is stopped when the last
     connection has been closed or the timeout expired.
-    The maximum timeout may vary.  Use -1 for the
-    largest possible value.  Ignored if force is set.
+    The maximum timeout may vary. Use -1 for the
+    largest possible value. Ignored if force is set.
 
-    Note: This endpoint does not block.  Use the wait
+    Note: This endpoint does not block. Use the wait
     endpoint for the instance to reach the stopped
     state.
     """
     quick: bool | None = None
     """
-    Whether to perform a quick shutdown.  This flag is
+    Whether to perform a quick shutdown. This flag is
     overridden by force.
     """
     ifstate: str | None = None
@@ -5239,25 +4059,33 @@ class StopInstancesRequestItem(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     force: bool | None = None
     """Whether to immediately force stop the instance."""
     drain_timeout_ms: int | None = None
     """
-    Timeout for draining connections in milliseconds.  The instance does not
-    receive new connections in the draining phase.  The instance is stopped
-    when the last connection has been closed or the timeout expired.  The
-    maximum timeout may vary.  Use -1 for the largest possible value.
+    Timeout for draining connections in milliseconds.
+    No draining will occur if set to 0. The instance
+    does not receive new connections in the draining
+    phase. The instance is stopped when the last
+    connection has been closed or the timeout expired.
+    The maximum timeout may vary. Use -1 for the
+    largest possible value. Ignored if force is set.
 
-    Note: This endpoint does not block.  Use the wait endpoint for the
-    instance to reach the stopped state.
+    Note: This endpoint does not block. Use the wait
+    endpoint for the instance to reach the stopped
+    state.
     """
     quick: bool | None = None
     """
-    Whether to perform a quick shutdown.  This flag is
+    Whether to perform a quick shutdown. This flag is
     overridden by force.
     """
     ifstate: str | None = None
@@ -5267,17 +4095,12 @@ class StopInstancesRequestItem(BaseModel):
     If set, forces the VMM to shutdown immediately and generate a coredump.
     Can only be used in conjunction with force.
     """
-    uuid: str | None = None
-    """The UUID of the instance to stop.  Mutually exclusive with name."""
-    name: str | None = None
-    """The name of the instance to stop.  Mutually exclusive with UUID."""
 
 
 class StopInstancesResponse(BaseModel):
     """
     The response message for stopping one or more instance(s) given their
-    UUID(s)
-    or name(s).
+    UUID(s) or name(s).
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -5289,22 +4112,18 @@ class StopInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: StopInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class StopInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -5312,35 +4131,33 @@ class StopInstancesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[StopInstancesResponseStoppedInstance] | None = None
-    """The instance(s) which were stopped by the request."""
 
 
 class StopInstancesResponseStoppedInstance(BaseModel):
+    """Per-item result for a stop instances operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the instance."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the instance."""
+    """The human-readable name of the resource."""
     state: InstanceState | None = None
     """The current state of the instance."""
     previous_state: InstanceState | None = None
-    """The previous state of the instance before the stop operation was invoked."""
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
     """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
+    The previous state of the instance before the stop operation was
+    invoked.
     """
 
 
@@ -5349,14 +4166,14 @@ class SuspendInstanceByUUIDRequestBody(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     drain_timeout_ms: int | None = None
     """
-    Timeout for draining connections in milliseconds.  No draining
-    will occur if set to 0.  Use -1 for the largest possible value.
+    Timeout for draining connections in milliseconds. No draining
+    will occur if set to 0. Use -1 for the largest possible value.
     """
 
 
@@ -5365,26 +4182,25 @@ class SuspendInstancesRequestItem(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     drain_timeout_ms: int | None = None
     """
-    Timeout for draining connections in milliseconds.  No draining
-    will occur if set to 0.  Use -1 for the largest possible value.
+    Timeout for draining connections in milliseconds. No draining
+    will occur if set to 0. Use -1 for the largest possible value.
     """
-    uuid: str | None = None
-    """The UUID of the instance to suspend.  Mutually exclusive with name."""
-    name: str | None = None
-    """The name of the instance to suspend.  Mutually exclusive with UUID."""
 
 
 class SuspendInstancesResponse(BaseModel):
     """
     The response message for suspending one or more instance(s) given their
-    UUID(s)
-    or name(s).
+    UUID(s) or name(s).
     """
 
     # Fields the specification does not describe are kept rather than dropped,
@@ -5396,22 +4212,18 @@ class SuspendInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: SuspendInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class SuspendInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -5419,162 +4231,69 @@ class SuspendInstancesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[SuspendInstancesResponseSuspendedInstance] | None = None
-    """The instance(s) which were suspended by the request."""
 
 
 class SuspendInstancesResponseSuspendedInstance(BaseModel):
+    """Per-item result for a suspend instances operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the instance."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the instance."""
+    """The human-readable name of the resource."""
     state: InstanceState | None = None
     """The current state of the instance."""
     previous_state: InstanceState | None = None
-    """The previous state of the instance before the suspend operation was invoked."""
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
     """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
+    The previous state of the instance before the suspend operation was
+    invoked.
     """
 
 
 class TemplateAutokill(BaseModel):
     """
-    (Optional). Automatic delete-on-idle configuration for the template
-    instance. Only applies when `prepare` is set.
+    Automatic delete-on-idle configuration for the template instance. Only
+    applies when `prepare` is set.
     """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     time_ms: int | None = None
     """
-    Time in milliseconds after the template was last used for cloning
-    before it is deleted. A value of 0 disables template autokill.
+    Time in milliseconds after the template was last used for cloning before
+    it is deleted. A value of 0 disables template autokill.
     """
-
-
-class UpdateCertificateByUUIDRequestBody(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    chain: str | None = None
-    """
-    The new certificate chain.
-
-    This is the public chain of the certificate in PEM format. The chain
-    should include the certificate and any intermediate certificates.
-    """
-    pkey: str | None = None
-    """
-    The new private key.
-
-    This is the private key of the certificate in PEM format. The private
-    key must match the public key in the certificate chain.
-    """
-
-
-class UpdateCertificatesRequestItem(BaseModel):
-    """A single update operation to be applied to a certificate."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    chain: str | None = None
-    """
-    The new certificate chain.
-
-    This is the public chain of the certificate in PEM format. The chain
-    should include the certificate and any intermediate certificates.
-    """
-    pkey: str | None = None
-    """
-    The new private key.
-
-    This is the private key of the certificate in PEM format. The private
-    key must match the public key in the certificate chain.
-    """
-    uuid: str | None = None
-    """The UUID of the certificate to update. Mutually exclusive with name."""
-    name: str | None = None
-    """The name of the certificate to update. Mutually exclusive with UUID."""
-
-
-class UpdateCertificatesResponse(BaseModel):
-    """The response message for updating one or more certificate(s)."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: UpdateCertificatesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class UpdateCertificatesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    certificates: list[Certificate] | None = None
-    """The certificate(s) which were updated by the request."""
 
 
 class UpdateCheckpointInstanceByUUIDRequestBody(BaseModel):
+    """Request body for updating a single checkpoint instance by UUID."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in
-    the response.
-    """
-    prop: MutableCheckpointInstanceProperty | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableCheckpointInstanceProperty
     """The property to modify."""
-    op: MutableCheckpointInstanceOperation | None = None
+    op: MutableCheckpointInstanceOperation
     """The operation to perform on the property."""
     value: Any | None = None
     """
@@ -5591,18 +4310,19 @@ class UpdateCheckpointInstancesRequestItem(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in
-    the response.
-    """
-    prop: MutableCheckpointInstanceProperty | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableCheckpointInstanceProperty
     """The property to modify."""
-    op: MutableCheckpointInstanceOperation | None = None
+    op: MutableCheckpointInstanceOperation
     """The operation to perform on the property."""
     value: Any | None = None
     """
@@ -5612,14 +4332,13 @@ class UpdateCheckpointInstancesRequestItem(BaseModel):
     - For "delete_lock": boolean
     - For "autokill": object with time_ms field
     """
-    uuid: str | None = None
-    """The UUID of the checkpoint instance to update. Mutually exclusive with name."""
-    name: str | None = None
-    """The name of the checkpoint instance to update. Mutually exclusive with UUID."""
 
 
 class UpdateCheckpointInstancesResponse(BaseModel):
-    """The response message for updating a checkpoint instance by its UUID."""
+    """
+    The response message for updating one or more checkpoint instance(s) given
+    their UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -5630,49 +4349,41 @@ class UpdateCheckpointInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: UpdateCheckpointInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class UpdateCheckpointInstancesResponseCheckpointInstance(BaseModel):
+    """Per-item result for an update checkpoint instances operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    uuid: str | None = None
-    """The UUID of the checkpoint instance that was updated."""
-    name: str | None = None
-    """The name of the checkpoint instance that was updated."""
     status: ResponseStatus | None = None
-    """The status of this particular checkpoint instance update operation."""
-    id: str | None = None
-    """(Optional).  The client-provided ID from the request."""
+    """Indicates whether the operation was successful for this item."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information."""
     error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    id: str | None = None
+    """The client-provided ID from the request."""
 
 
 class UpdateCheckpointInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -5689,25 +4400,22 @@ class UpdateCheckpointInstancesResponseData(BaseModel):
 class UpdateInstanceByUUIDRequestBody(BaseModel):
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in
-    the response.
-    """
-    prop: MutableInstanceProperty | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableInstanceProperty
     """The property to modify."""
-    op: MutableInstanceOperation | None = None
+    op: MutableInstanceOperation
     """The operation to perform on the property."""
     value: Any | None = None
     """
     The value for the update operation. The type depends on the property and
     operation:
     - For "image": image reference string, or object with image url,
-      credentials, headers and pull policy
+    credentials, headers and pull policy
     - For "args": string or array of strings
     - For "env": object (for SET/ADD) or string/array of strings (for DEL)
     - For "memory_mb": integer
@@ -5717,18 +4425,22 @@ class UpdateInstanceByUUIDRequestBody(BaseModel):
     - For "tags": array of strings
     - For "delete_lock": boolean
     - For "schedules": array of schedule objects (with name, when, action, and
-    optional args fields) for SET/ADD, or array of schedule names for DEL.
-      Use action "exec" together with args to execute a command at the scheduled
-    time.
+    optional args fields)
+    for SET/ADD, or array of schedule names for DEL. Use action "exec" together
+    with args to
+    execute a command at the scheduled time.
     - For "autokill": object with time_ms and num_requests fields
     - For "hostname": string (valid DNS label)
     - For "roms": array of ROM objects (with name and image fields) for SET/ADD,
     or array of ROM names for DEL
-    - For "plugins": array of plugin objects (with name, rom, and optional
-    config fields) for SET/ADD
+    - For "plugins": array of plugin objects (with name, image, and optional
+    config fields)
+    for SET/ADD. The deprecated `rom` field is accepted in place of `image`.
     - For "dependencies": array of instance identifiers (name or UUID)
     - For "sched_priority": SchedPriority enum value ("normal", "medium",
     "high", "admin")
+    - For "annotations": object (for SET/ADD) or string/array of strings (for
+    DEL)
     """
 
 
@@ -5737,25 +4449,26 @@ class UpdateInstancesRequestItem(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in
-    the response.
-    """
-    prop: MutableInstanceProperty | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableInstanceProperty
     """The property to modify."""
-    op: MutableInstanceOperation | None = None
+    op: MutableInstanceOperation
     """The operation to perform on the property."""
     value: Any | None = None
     """
     The value for the update operation. The type depends on the property and
     operation:
     - For "image": image reference string, or object with image url,
-      credentials, headers and pull policy
+    credentials, headers and pull policy
     - For "args": string or array of strings
     - For "env": object (for SET/ADD) or string/array of strings (for DEL)
     - For "memory_mb": integer
@@ -5765,27 +4478,30 @@ class UpdateInstancesRequestItem(BaseModel):
     - For "tags": array of strings
     - For "delete_lock": boolean
     - For "schedules": array of schedule objects (with name, when, action, and
-    optional args fields) for SET/ADD, or array of schedule names for DEL.
-      Use action "exec" together with args to execute a command at the scheduled
-    time.
+    optional args fields)
+    for SET/ADD, or array of schedule names for DEL. Use action "exec" together
+    with args to
+    execute a command at the scheduled time.
     - For "autokill": object with time_ms and num_requests fields
     - For "hostname": string (valid DNS label)
     - For "roms": array of ROM objects (with name and image fields) for SET/ADD,
     or array of ROM names for DEL
-    - For "plugins": array of plugin objects (with name, rom, and optional
-    config fields) for SET/ADD
+    - For "plugins": array of plugin objects (with name, image, and optional
+    config fields)
+    for SET/ADD. The deprecated `rom` field is accepted in place of `image`.
     - For "dependencies": array of instance identifiers (name or UUID)
     - For "sched_priority": SchedPriority enum value ("normal", "medium",
     "high", "admin")
+    - For "annotations": object (for SET/ADD) or string/array of strings (for
+    DEL)
     """
-    uuid: str | None = None
-    """The UUID of the instance to update. Mutually exclusive with name."""
-    name: str | None = None
-    """The name of the instance to update. Mutually exclusive with UUID."""
 
 
 class UpdateInstancesResponse(BaseModel):
-    """The response message for updating one or more instances."""
+    """
+    The response message for updating one or more instance(s) given their
+    UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -5796,22 +4512,18 @@ class UpdateInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: UpdateInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class UpdateInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -5819,179 +4531,44 @@ class UpdateInstancesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[UpdateInstancesResponseUpdatedInstance] | None = None
-    """List of instances that were processed during the update operation."""
 
 
 class UpdateInstancesResponseUpdatedInstance(BaseModel):
+    """Per-item result for an update instances operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    uuid: str | None = None
-    """The UUID of the instance that was updated."""
-    name: str | None = None
-    """The name of the instance that was updated."""
     status: ResponseStatus | None = None
-    """The status of this particular instance update operation."""
-    id: str | None = None
-    """(Optional).  The client-provided ID from the request."""
+    """Indicates whether the operation was successful for this item."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information."""
     error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class UpdateServiceGroupByUUIDRequestBody(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in the
-    response.
-    """
-    prop: MutableServiceGroupProperty | None = None
-    """The property to modify."""
-    op: MutableServiceGroupOperation | None = None
-    """The operation to perform."""
-    value: Any | None = None
-    """
-    The value for the update operation:
-    - For "services": array of Service objects (same as for creation)
-    - For "domains": array of Domain objects (same as for creation)
-    - For "soft_limit": integer (1–65535), must be <= "hard_limit"
-    - For "hard_limit": integer (1–65535), must be >= "soft_limit"
-    - For "autokill": object with time_ms field
-    """
-
-
-class UpdateServiceGroupsRequestItem(BaseModel):
-    """A single update operation to be applied to a service group"""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in the
-    response.
-    """
-    prop: MutableServiceGroupProperty | None = None
-    """The property to modify."""
-    op: MutableServiceGroupOperation | None = None
-    """The operation to perform."""
-    value: Any | None = None
-    """
-    The value for the update operation:
-    - For "services": array of Service objects (same as for creation)
-    - For "domains": array of Domain objects (same as for creation)
-    - For "soft_limit": integer (1–65535), must be <= "hard_limit"
-    - For "hard_limit": integer (1–65535), must be >= "soft_limit"
-    - For "autokill": object with time_ms field
-    """
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the service group to update.  Mutually exclusive with name."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the service group to update.  Mutually exclusive with UUID."""
-
-
-class UpdateServiceGroupsResponse(BaseModel):
-    """The response message for updating one or more service groups."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: UpdateServiceGroupsResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class UpdateServiceGroupsResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    service_groups: list[UpdateServiceGroupsResponseUpdatedServiceGroup] | None = None
-    """List of service groups that were processed during the update operation."""
-
-
-class UpdateServiceGroupsResponseUpdatedServiceGroup(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    uuid: str | None = None
-    """The UUID of the service group that was updated."""
-    name: str | None = None
-    """The name of the service group that was updated."""
-    status: ResponseStatus | None = None
-    """The status of this particular service group update operation."""
+    """The human-readable name of the resource."""
     id: str | None = None
-    """(Optional).  The client-provided ID from the request."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
+    """The client-provided ID from the request."""
 
 
 class UpdateTemplateInstanceByUUIDRequestBody(BaseModel):
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in
-    the response.
-    """
-    prop: MutableTemplateInstanceProperty | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableTemplateInstanceProperty
     """The property to modify."""
-    op: MutableTemplateInstanceOperation | None = None
-    """The operation to perform on the property."""
+    op: MutableTemplateInstanceOperation
+    """The operation to perform."""
     value: Any | None = None
     """
     The value for the update operation. The type depends on the property and
@@ -6003,23 +4580,24 @@ class UpdateTemplateInstanceByUUIDRequestBody(BaseModel):
 
 
 class UpdateTemplateInstancesRequestItem(BaseModel):
-    """A single update operation to be applied to a template instance."""
+    """A single template instance update request item."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in
-    the response.
-    """
-    prop: MutableTemplateInstanceProperty | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableTemplateInstanceProperty
     """The property to modify."""
-    op: MutableTemplateInstanceOperation | None = None
-    """The operation to perform on the property."""
+    op: MutableTemplateInstanceOperation
+    """The operation to perform."""
     value: Any | None = None
     """
     The value for the update operation. The type depends on the property and
@@ -6028,14 +4606,13 @@ class UpdateTemplateInstancesRequestItem(BaseModel):
     - For "delete_lock": boolean
     - For "autokill": object with time_ms field
     """
-    uuid: str | None = None
-    """The UUID of the template instance to update. Mutually exclusive with name."""
-    name: str | None = None
-    """The name of the template instance to update. Mutually exclusive with UUID."""
 
 
 class UpdateTemplateInstancesResponse(BaseModel):
-    """The response message for updating a template instance by its UUID."""
+    """
+    The response message for updating one or more template instance(s) given
+    their UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -6046,22 +4623,18 @@ class UpdateTemplateInstancesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: UpdateTemplateInstancesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class UpdateTemplateInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -6069,10 +4642,364 @@ class UpdateTemplateInstancesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     instances: list[UpdateTemplateInstancesResponseTemplateInstance] | None = None
-    """List of template instances that were processed during the update operation."""
 
 
 class UpdateTemplateInstancesResponseTemplateInstance(BaseModel):
+    """Per-item result for an update template instances operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    id: str | None = None
+    """Client-provided operation ID."""
+
+
+class WaitInstanceByUUIDRequestBody(BaseModel):
+    """Wait parameters."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    state: InstanceState
+    """The desired state to wait for. Default is `running`."""
+    timeout_ms: int | None = None
+    """
+    Deprecated: Use `timeout_s` instead. Timeout in milliseconds to
+    wait for the instance to reach the desired state. If `timeout_s` is
+    not set, this value is converted by rounding up to the next full
+    second. A value of -1 means to wait indefinitely.
+    """
+    timeout_s: int | None = None
+    """
+    Timeout in seconds to wait for the instance to reach the desired
+    state. If the timeout is reached, the request will fail with an
+    error. A value of -1 means to wait indefinitely until the instance
+    reaches the desired state. No wait performed for a value of 0.
+    """
+
+
+class WaitInstancesRequestItem(BaseModel):
+    """A single request item to wait for an instance's state."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
+    state: InstanceState | None = None
+    """The desired state to wait for. Default is `running`."""
+    timeout_ms: int | None = None
+    """
+    Deprecated: Use `timeout_s` instead. Timeout in milliseconds to
+    wait for the instance to reach the desired state. If `timeout_s` is
+    not set, this value is converted by rounding up to the next full
+    second. A value of -1 means to wait indefinitely.
+    """
+    timeout_s: int | None = None
+    """
+    Timeout in seconds to wait for the instance to reach the desired
+    state. If the timeout is reached, the request will fail with an
+    error. A value of -1 means to wait indefinitely until the instance
+    reaches the desired state. No wait performed for a value of 0.
+    """
+
+
+class WaitInstancesResponse(BaseModel):
+    """
+    The response message for waiting for one or more instance(s) to reach a
+    certain state given their UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: WaitInstancesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class WaitInstancesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    instances: list[WaitInstancesResponseWaitedInstance] | None = None
+
+
+class WaitInstancesResponseWaitedInstance(BaseModel):
+    """Per-item result for a wait instances operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    state: InstanceState | None = None
+    """The current state of the instance."""
+
+
+class DataLicense(BaseModel):
+    """License information (admin only)."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    serial: str | None = None
+    """The serial number of the license certificate, hex-encoded."""
+    valid: bool | None = None
+    """Whether the license is currently valid."""
+    features: list[str] | None = None
+    """List of enabled features."""
+
+
+class HealthzResponse(BaseModel):
+    """Standard response envelope wrapping all API responses."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: HealthzResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class HealthzResponseData(BaseModel):
+    """Additional data returned by the health check."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    checks: dict[str, HealthState] | None = None
+    """
+    The health state of each registered checker, keyed by checker name.
+    Valid keys are "images", "systemd", and "user-defined"; a checker's
+    key is only present if it is enabled. Checkers report only their
+    aggregate state; per-check detail (e.g. which default image is
+    missing, or which user-defined script failed) is not exposed here.
+    """
+    versions: dict[str, str] | None = None
+    license: DataLicense | None = None
+    """License information (admin only)."""
+
+
+class CreateServiceGroupRequest(BaseModel):
+    """The request message for creating a new service group."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    name: str | None = None
+    """
+    Name of the service group. This is a human-readable name that can be used
+    to identify the service group. The name must be unique within the context
+    of your account. If no name is specified, a random name is generated for
+    you. The name can also be used to identify the service group in API calls.
+    """
+    services: list[Service]
+    """Services to expose. At least one service is required."""
+    domains: list[CreateServiceGroupRequestDomain] | None = None
+    """Description of domains associated with the service group."""
+    soft_limit: int | None = None
+    """
+    The soft limit is used by the Unikraft Cloud load balancer to decide when
+    to wake up another standby instance.
+
+    For example, if the soft limit is set to 5 and the service consists of 2
+    standby instances, one of the instances receives up to 5 concurrent
+    requests. The 6th parallel requests wakes up the second instance. If
+    there are no more standby instances to wake up, the number of requests
+    assigned to each instance will exceed the soft limit. The load balancer
+    makes sure that when the number of in-flight requests goes down again,
+    instances are put into standby as fast as possible.
+    """
+    hard_limit: int | None = None
+    """
+    The hard limit defines the maximum number of concurrent requests that an
+    instance assigned to the this service can handle.
+
+    The load balancer will never assign more requests to a single instance. In
+    case there are no other instances available, excess requests fail (i.e.,
+    they are blocked and not queued).
+    """
+    autokill: CreateServiceGroupRequestAutokill | None = None
+    """Automatic delete-on-idle configuration."""
+
+
+class CreateServiceGroupRequestAutokill(BaseModel):
+    """Autokill configuration when creating a service group."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    time_ms: int | None = None
+    """
+    Time in milliseconds after the service group becomes empty before it is
+    deleted. A value of 0 disables autokill.
+    """
+
+
+class CreateServiceGroupRequestDomain(BaseModel):
+    """A domain to attach when creating a service group."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    name: str
+    """
+    Publicly accessible domain name. If this name ends in a period `.` it must
+    be a valid Full Qualified Domain Name (FQDN), otherwise it will become a
+    subdomain of the target metro.
+    """
+    certificate: NameOrUUID | None = None
+    """
+    Use an existing certificate for the domain. If this field is
+    specified, the domain must be associated with a valid certificate.
+    """
+
+
+class CreateServiceGroupResponse(BaseModel):
+    """The response message for creating a new service group."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: CreateServiceGroupResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class CreateServiceGroupResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    service_groups: list[ServiceGroup] | None = None
+
+
+class DeleteServiceGroupsResponse(BaseModel):
+    """
+    The response message for deleting of one or more service group(s) given
+    their UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: DeleteServiceGroupsResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class DeleteServiceGroupsResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    service_groups: list[DeleteServiceGroupsResponseDeletedServiceGroup] | None = None
+
+
+class DeleteServiceGroupsResponseDeletedServiceGroup(BaseModel):
+    """Per-item result for a delete service groups operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -6080,47 +5007,1172 @@ class UpdateTemplateInstancesResponseTemplateInstance(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     uuid: str | None = None
-    """The UUID of the template instance that was updated."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the template instance that was updated."""
+    """The human-readable name of the resource."""
     status: ResponseStatus | None = None
-    """The status of this particular template instance update operation."""
-    id: str | None = None
-    """(Optional).  The client-provided ID from the request."""
+    """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional error code providing additional information about the status."""
 
 
-class UpdateTemplateVolumeByUUIDRequestBody(BaseModel):
+class Domain(BaseModel):
+    """
+    A domain name. Domain names are completely specified with all labels in the
+    hierarchy of the DNS, having no parts omitted. The domain can be associated
+    with an existing certificate by specifying the certificate's name or UUID.
+    If no certificate is specified and a FQDN is provided, Unikraft Cloud will
+    automatically generate a new certificate for the domain based on Let's
+    Encrypt and seek to accomplish a DNS-01 challenge.
+    """
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    fqdn: str | None = None
+    """
+    Publicly accessible domain name. If this name ends in a period `.` it must
+    be a valid Full Qualified Domain Name (FQDN), otherwise it will become a
+    subdomain of the target metro.
+    """
+    certificate: Certificate | None = None
+    """
+    Use an existing certificate for the domain. If this field is
+    specified, the domain must be associated with a valid certificate.
+    """
+
+
+class GetServiceGroupsResponse(BaseModel):
+    """
+    The response message for getting one or more service group(s) given their
+    UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: GetServiceGroupsResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class GetServiceGroupsResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    service_groups: list[ServiceGroup] | None = None
+
+
+class Service(BaseModel):
+    """
+    A service connects a public-facing port to an internal destination port on
+    which an application instance listens on. Additional handlers can be
+    defined for each published port in order to define how the service will
+    handle incoming connections and forward traffic from the Internet to your
+    application. For example, a service can be configured to terminate TLS
+    connections, redirect HTTP traffic, or enable HTTP mode for load balancing.
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    port: int | None = None
+    """
+    This is the public-facing port that the service will be accessible from
+    on the Internet.
+    """
+    destination_port: int | None = None
+    """
+    The port number that the instance is listening on. This is the internal
+    port which Unikraft Cloud will forward traffic to.
+    """
+    protocol: ServiceProtocol | None = None
+    ip: str | None = None
+    handlers: list[ConnectionHandler] | None = None
+    """
+    Connection handlers to use for the service. Handlers define how the
+    service will handle incoming connections and forward traffic from the
+    Internet to your application. For example, a service can be configured
+    to terminate TLS connections, redirect HTTP traffic, or enable HTTP mode
+    for load balancing. You configure the handlers for every published
+    service port individually.
+    """
+
+
+class ServiceGroup(BaseModel):
+    """
+    A service group on Unikraft Cloud is used to describe how your application
+    exposes its functionality to the outside world. Once defined, assigning an
+    instance to the service will make it accessible from the Internet.
+
+    An application, running as an instance, may expose one or more ports, e.g.
+    it listens on port 80 because your application exposes a HTTP web service.
+    This, along with a set of additional metadata defines how the "service" is
+    configured and accessed. For example, a service may be configured to use
+    TLS, or be bound to a specific domain name.
+
+    When an instance is assigned to a service group, it immediately becomes
+    accessible over the Internet on the exposed public port, using the set DNS
+    name, and is routed to the set destination port.
+
+    Note: If you do not specify a DNS name when you create a service and you
+    indicate that the application exposes some ports, Unikraft Cloud will
+    generates a random DNS name for you. Unikraft Cloud also supports custom
+    domains like www.example.com and wildcard domains like *.example.com.
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    created_at: datetime | None = None
+    """The time the service was created."""
+    persistent: bool | None = None
+    """
+    Indicates if the service will stay remain even after the last instance
+    detached. If this is set to false, the service will be deleted when the
+    last instance detached from it. If this is set to true, the service will
+    remain and can be reused by other instances. This is useful if you want to
+    keep the service configuration, e.g., the published ports, handlers, and
+    domains, even if there are no instances assigned to it.
+    """
+    autoscale: bool | None = None
+    """
+    Indicates if the service has autoscale enabled. See the associated
+    autoscale documentation for more information about how to set this up.
+    Autoscale policies can be set up after the service has been created.
+    """
+    soft_limit: int | None = None
+    """
+    The soft limit is used by the Unikraft Cloud load balancer to decide when
+    to wake up another standby instance. For example, if the soft limit is set
+    to 5 and the service consists of 2 standby instances, one of the instances
+    receives up to 5 concurrent requests. The 6th parallel requests wakes up
+    the second instance. If there are no more standby instances to wake up,
+    the number of requests assigned to each instance will exceed the soft
+    limit. The load balancer makes sure that when the number of in-flight
+    requests goes down again, instances are put into standby as fast as
+    possible.
+    """
+    hard_limit: int | None = None
+    """
+    The hard limit defines the maximum number of concurrent requests that an
+    instance assigned to the this service can handle. The load balancer will
+    never assign more requests to a single instance. In case there are no
+    other instances available, excess requests fail (i.e., they are blocked and
+    not queued).
+    """
+    services: list[Service] | None = None
+    """
+    List of published network ports for this service and the destination port
+    to which Unikraft Cloud will forward traffic to. Additional handlers can
+    be defined for each published port in order to define how the service will
+    handle incoming connections and forward traffic from the Internet to your
+    application. For example, a service can be configured to terminate TLS
+    connections, redirect HTTP traffic, or enable HTTP mode for load balancing.
+    """
+    domains: list[Domain] | None = None
+    """
+    List of domains associated with the service. Domains are used to access
+    the service over the Internet.
+    """
+    instances: list[ServiceGroupInstance] | None = None
+    """List of instances assigned to the service."""
+    autokill: ServiceGroupAutokill | None = None
+    """Automatic delete-on-idle configuration."""
+
+
+class ServiceGroupAutokill(BaseModel):
+    """Autokill configuration for a service group."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    time_ms: int | None = None
+    """
+    Time in milliseconds after the service group becomes empty before it is
+    deleted. A value of 0 disables autokill.
+    """
+
+
+class ServiceGroupInstance(BaseModel):
+    """An instance belonging to a service group."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+
+
+class UpdateServiceGroupByUUIDRequestBody(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
     id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in
-    the response.
-    """
-    prop: MutableTemplateVolumeProperty | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableServiceGroupProperty
     """The property to modify."""
-    op: MutableTemplateVolumeOperation | None = None
+    op: MutableServiceGroupOperation
     """The operation to perform."""
     value: Any | None = None
     """
     The value for the update operation. The type depends on the property and
     operation:
-    - For "tags": array of Strings
+    - For "image": string
+    - For "args": string or array of strings
+    - For "env": object (for SET/ADD) or string/array of strings (for DEL)
+    - For "memory_mb": integer
+    - For "vcpus": integer
+    - For "scale_to_zero": object with cooldown_time_ms, policy, and stateful
+    fields
+    - For "tags": array of strings
     - For "delete_lock": boolean
+    - For "schedules": array of schedule objects (with name, when, action, and
+    optional args fields).
+    Use action "exec" together with args to execute a command at the scheduled
+    time.
+    - For "autokill": object with time_ms and num_requests fields
+    - For "hostname": string (valid DNS label)
+    - For "roms": array of ROM objects (with name and image fields) for SET/ADD,
+    or array of ROM names for DEL
+    - For "dependencies": array of instance identifiers (name or UUID)
+    - For "sched_priority": SchedPriority enum value ("normal", "medium",
+    "high", "admin")
+    """
+
+
+class UpdateServiceGroupsRequestItem(BaseModel):
+    """A single update operation to be applied to a service group."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
+    id: str | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableServiceGroupProperty
+    """The property to modify."""
+    op: MutableServiceGroupOperation
+    """The operation to perform."""
+    value: Any | None = None
+    """
+    The value for the update operation. The type depends on the property and
+    operation:
+    - For "image": string
+    - For "args": string or array of strings
+    - For "env": object (for SET/ADD) or string/array of strings (for DEL)
+    - For "memory_mb": integer
+    - For "vcpus": integer
+    - For "scale_to_zero": object with cooldown_time_ms, policy, and stateful
+    fields
+    - For "tags": array of strings
+    - For "delete_lock": boolean
+    - For "schedules": array of schedule objects (with name, when, action, and
+    optional args fields).
+    Use action "exec" together with args to execute a command at the scheduled
+    time.
+    - For "autokill": object with time_ms and num_requests fields
+    - For "hostname": string (valid DNS label)
+    - For "roms": array of ROM objects (with name and image fields) for SET/ADD,
+    or array of ROM names for DEL
+    - For "dependencies": array of instance identifiers (name or UUID)
+    - For "sched_priority": SchedPriority enum value ("normal", "medium",
+    "high", "admin")
+    """
+
+
+class UpdateServiceGroupsResponse(BaseModel):
+    """
+    The response message for updating one or more service group(s) given their
+    UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: UpdateServiceGroupsResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class UpdateServiceGroupsResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    service_groups: list[UpdateServiceGroupsResponseUpdatedServiceGroup] | None = None
+
+
+class UpdateServiceGroupsResponseUpdatedServiceGroup(BaseModel):
+    """Per-item result for an update service groups operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    id: str | None = None
+    """The client-provided ID from the request."""
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    error: int | None = None
+    """An optional error code providing additional information about the status."""
+
+
+class Quotas(BaseModel):
+    """Quotas with per-item response envelope fields merged in."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the quota."""
+    used: QuotasStats | None = None
+    """Used quota."""
+    hard: QuotasStats | None = None
+    """Configured quota limits."""
+    limits: QuotasLimits | None = None
+    """Additional limits."""
+
+
+class QuotasLimits(BaseModel):
+    """Additional resource limits."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    min_memory_mb: int | None = None
+    """Minimum amount of memory assigned to live instances in megabytes"""
+    max_memory_mb: int | None = None
+    """Maximum amount of memory assigned to live instances in megabytes"""
+    min_volume_mb: int | None = None
+    """Minimum size of a volume in megabytes"""
+    max_volume_mb: int | None = None
+    """Maximum size of a volume in megabytes"""
+    min_autoscale_size: int | None = None
+    """Minimum size of an autoscale group"""
+    max_autoscale_size: int | None = None
+    """Maximum size of an autoscale group"""
+    min_vcpus: int | None = None
+    """Minimum number of vCPUs"""
+    max_vcpus: int | None = None
+    """Maximum number of vCPUs"""
+
+
+class QuotasResponse(BaseModel):
+    """The response message for getting the quota of a user given their UUID."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: QuotasResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class QuotasResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    quotas: list[Quotas] | None = None
+
+
+class QuotasStats(BaseModel):
+    """Quota statistics for resource usage."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    instances: int | None = None
+    """Number of instances."""
+    live_instances: int | None = None
+    """Number of instances that are not in the stopped state."""
+    live_vcpus: int | None = None
+    """Number of vCPUs."""
+    live_memory_mb: int | None = None
+    """
+    Amount of memory assigned to instances that are not in the `stopped` state
+    in megabytes.
+    """
+    service_groups: int | None = None
+    """Number of service groups."""
+    services: int | None = None
+    """Number of published network ports over all existing services."""
+    volumes: int | None = None
+    """Number of volumes."""
+    total_volume_mb: int | None = None
+    """Total size of all volumes in megabytes."""
+
+
+class AttachVolumeByUUIDRequestBody(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    attach_to: NameOrUUID
+    """UUID or name of the instance to attach the volume to."""
+    at: str
+    """
+    Path of the mountpoint.
+
+    The path must be absolute, not contain `.` and `..` components, and not
+    contain colons (`:`). The path must point to an empty directory. If the
+    directory does not exist, it is created.
+    """
+    readonly: bool | None = None
+    """Whether the volume should be mounted read-only."""
+
+
+class AttachVolumesRequestItem(BaseModel):
+    """A single request item to attach a volume to an instance."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
+    attach_to: NameOrUUID
+    """UUID or name of the instance to attach the volume to."""
+    at: str
+    """
+    Path of the mountpoint.
+
+    The path must be absolute, not contain `.` and `..` components, and not
+    contain colons (`:`). The path must point to an empty directory. If the
+    directory does not exist, it is created.
+    """
+    readonly: bool | None = None
+    """Whether the volume should be mounted read-only."""
+
+
+class AttachVolumesResponse(BaseModel):
+    """
+    The response message for attaching one or more volume(s) given their
+    UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: AttachVolumesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class AttachVolumesResponseAttachedVolume(BaseModel):
+    """Per-item result for an attach volumes operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+
+
+class AttachVolumesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    volumes: list[AttachVolumesResponseAttachedVolume] | None = None
+
+
+class CloneVolumeByUUIDRequestBody(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    vol_name: str | None = None
+    """
+    The name of the new cloned volume. If not provided, a random name
+    of the form `vol-X` is generated for you, where `X` is a 5 character
+    long random alphanumeric suffix.
+    """
+    quota_policy: VolumeQuotaPolicy | None = None
+    """
+    The quota policy for the new cloned volume. If not provided, the quota
+    policy of the source volume is used.
+    """
+    tags: list[str] | None = None
+    """A list of tags to assign to the new cloned volume."""
+    access_mode: VolumeAccessMode | None = None
+
+
+class CloneVolumesRequestItem(BaseModel):
+    """A single request item to clone a volume."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
+    vol_name: str | None = None
+    """
+    The name of the new cloned volume. If not provided, a random name
+    of the form `vol-X` is generated for you, where `X` is a 5 character
+    long random alphanumeric suffix.
+    """
+    quota_policy: VolumeQuotaPolicy | None = None
+    """
+    The quota policy for the new cloned volume. If not provided, the quota
+    policy of the source volume is used.
+    """
+    tags: list[str] | None = None
+    """A list of tags to assign to the new cloned volume."""
+    access_mode: VolumeAccessMode | None = None
+
+
+class CloneVolumesResponse(BaseModel):
+    """
+    The response message for cloning one or more volume(s) given their UUID(s)
+    or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: CloneVolumesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class CloneVolumesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    volumes: list[CloneVolumesResponseVolume] | None = None
+
+
+class CloneVolumesResponseVolume(BaseModel):
+    """Per-item result for a clone volumes operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    state: VolumeState | None = None
+    """The state of the volume."""
+
+
+class CreateTemplateVolumesResponse(BaseModel):
+    """The response message for converting one or more volume(s) to templates."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: CreateTemplateVolumesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class CreateTemplateVolumesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    volumes: list[CreateTemplateVolumesResponseTemplateVolume] | None = None
+    """The volume(s) which were attached by the request."""
+
+
+class CreateTemplateVolumesResponseTemplateVolume(BaseModel):
+    """Per-item result for a create template volume operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    state: VolumeState | None = None
+    """The state of the volume."""
+
+
+class CreateVolumeRequest(BaseModel):
+    """The request message for creating a volume."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    name: str | None = None
+    size_mb: int | None = None
+    host_path: str | None = None
+    template: NameOrUUID | None = None
+    quota_policy: VolumeQuotaPolicy | None = None
+    filesystem: str | None = None
+    tags: list[str] | None = None
+    uid: int | None = None
+    gid: int | None = None
+    access_mode: VolumeAccessMode | None = None
+    args: dict[str, str] | None = None
+
+
+class CreateVolumeResponse(BaseModel):
+    """The response message for creating a volume."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: CreateVolumeResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class CreateVolumeResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    volumes: list[CreateVolumeResponseVolume] | None = None
+
+
+class CreateVolumeResponseVolume(BaseModel):
+    """Per-item result for a create volume operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    state: VolumeState | None = None
+    """The state of the volume."""
+
+
+class DeleteTemplateVolumesResponse(BaseModel):
+    """
+    The response message for deleting one or more template volume(s) given
+    their UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: DeleteTemplateVolumesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class DeleteTemplateVolumesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    volumes: list[DeleteTemplateVolumesResponseTemplateVolume] | None = None
+
+
+class DeleteTemplateVolumesResponseTemplateVolume(BaseModel):
+    """Per-item result for a delete template volumes operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+
+
+class DeleteVolumesResponse(BaseModel):
+    """
+    The response message for deleting one or more volume(s) given their
+    UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: DeleteVolumesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class DeleteVolumesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    volumes: list[DeleteVolumesResponseDeletedVolume] | None = None
+
+
+class DeleteVolumesResponseDeletedVolume(BaseModel):
+    """Per-item result for a delete volumes operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+
+
+class DetachVolumeByUUIDRequestBody(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    from_: NameOrUUID | None = Field(default=None, alias="from")
+    """
+    UUID or name of the instance to detach the volume from. If not specified,
+    the volume is detached from all instances.
+    """
+
+
+class DetachVolumesRequestItem(BaseModel):
+    """A single request item to detach a volume from an instance."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
+    from_: NameOrUUID | None = Field(default=None, alias="from")
+    """
+    UUID or name of the instance to detach the volume from. If not specified,
+    the volume is detached from all instances.
+    """
+
+
+class DetachVolumesResponse(BaseModel):
+    """
+    The response message for detaching one or more volume(s) given their
+    UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: DetachVolumesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class DetachVolumesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    volumes: list[DetachVolumesResponseDetachedVolume] | None = None
+
+
+class DetachVolumesResponseDetachedVolume(BaseModel):
+    """Per-item result for a detach volumes operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+
+
+class GetTemplateVolumesResponse(BaseModel):
+    """
+    The response message for getting one or more template volume(s) given their
+    UUID(s) or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: GetTemplateVolumesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class GetTemplateVolumesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    volumes: list[Volume] | None = None
+
+
+class GetVolumesResponse(BaseModel):
+    """
+    The response message for getting one or more volume(s) given their UUID(s)
+    or name(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: GetVolumesResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class GetVolumesResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    volumes: list[Volume] | None = None
+
+
+class UpdateTemplateVolumeByUUIDRequestBody(BaseModel):
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: str | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableTemplateVolumeProperty
+    """The property to modify."""
+    op: MutableTemplateVolumeOperation
+    """The operation to perform."""
+    value: Any | None = None
+    """
+    The value for the update operation. The type depends on the property and
+    operation:
+    - For "image": string
+    - For "args": string or array of strings
+    - For "env": object (for SET/ADD) or string/array of strings (for DEL)
+    - For "memory_mb": integer
+    - For "vcpus": integer
+    - For "scale_to_zero": object with cooldown_time_ms, policy, and stateful
+    fields
+    - For "tags": array of strings
+    - For "delete_lock": boolean
+    - For "schedules": array of schedule objects (with name, when, action, and
+    optional args fields).
+    Use action "exec" together with args to execute a command at the scheduled
+    time.
+    - For "autokill": object with time_ms and num_requests fields
+    - For "hostname": string (valid DNS label)
+    - For "roms": array of ROM objects (with name and image fields) for SET/ADD,
+    or array of ROM names for DEL
+    - For "dependencies": array of instance identifiers (name or UUID)
+    - For "sched_priority": SchedPriority enum value ("normal", "medium",
+    "high", "admin")
     """
 
 
@@ -6129,40 +6181,52 @@ class UpdateTemplateVolumesRequestItem(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in
-    the response.
-    """
-    prop: MutableTemplateVolumeProperty | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableTemplateVolumeProperty
     """The property to modify."""
-    op: MutableTemplateVolumeOperation | None = None
+    op: MutableTemplateVolumeOperation
     """The operation to perform."""
     value: Any | None = None
     """
     The value for the update operation. The type depends on the property and
     operation:
-    - For "tags": array of Strings
+    - For "image": string
+    - For "args": string or array of strings
+    - For "env": object (for SET/ADD) or string/array of strings (for DEL)
+    - For "memory_mb": integer
+    - For "vcpus": integer
+    - For "scale_to_zero": object with cooldown_time_ms, policy, and stateful
+    fields
+    - For "tags": array of strings
     - For "delete_lock": boolean
-    """
-    uuid: str | None = None
-    """
-    The UUID of the template volume to update.  Mutually exclusive with
-    name.
-    """
-    name: str | None = None
-    """
-    The name of the template volume to update.  Mutually exclusive with
-    UUID.
+    - For "schedules": array of schedule objects (with name, when, action, and
+    optional args fields).
+    Use action "exec" together with args to execute a command at the scheduled
+    time.
+    - For "autokill": object with time_ms and num_requests fields
+    - For "hostname": string (valid DNS label)
+    - For "roms": array of ROM objects (with name and image fields) for SET/ADD,
+    or array of ROM names for DEL
+    - For "dependencies": array of instance identifiers (name or UUID)
+    - For "sched_priority": SchedPriority enum value ("normal", "medium",
+    "high", "admin")
     """
 
 
 class UpdateTemplateVolumesResponse(BaseModel):
-    """The response message for updating one or more template volumes."""
+    """
+    The response message for updating one or more template volume(s) given
+    their UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -6173,22 +6237,18 @@ class UpdateTemplateVolumesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: UpdateTemplateVolumesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class UpdateTemplateVolumesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -6196,98 +6256,122 @@ class UpdateTemplateVolumesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     volumes: list[UpdateTemplateVolumesResponseTemplateVolume] | None = None
-    """The template volume(s) which were updated by the request."""
 
 
 class UpdateTemplateVolumesResponseTemplateVolume(BaseModel):
+    """Per-item result for an update template volumes operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    uuid: str | None = None
-    """The UUID of the template volume that was updated."""
-    name: str | None = None
-    """The name of the template volume that was updated."""
     status: ResponseStatus | None = None
-    """The status of this particular volume update operation."""
-    id: str | None = None
-    """(Optional).  The client-provided ID from the request."""
+    """Indicates whether the operation was successful for this item."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information."""
     error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    id: str | None = None
+    """The client-provided ID from the request."""
 
 
 class UpdateVolumeByUUIDRequestBody(BaseModel):
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in the
-    response.
-    """
-    prop: MutableVolumeProperty | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableVolumeProperty
     """The property to modify."""
-    op: MutableVolumeOperation | None = None
+    op: MutableVolumeOperation
     """The operation to perform."""
     value: Any | None = None
     """
     The value for the update operation. The type depends on the property and
     operation:
-    - For "size_mb": unsigned integer
-    - For "quota_policy": "static" or "dynamic"
-    - For "tags": array of Strings
+    - For "image": string
+    - For "args": string or array of strings
+    - For "env": object (for SET/ADD) or string/array of strings (for DEL)
+    - For "memory_mb": integer
+    - For "vcpus": integer
+    - For "scale_to_zero": object with cooldown_time_ms, policy, and stateful
+    fields
+    - For "tags": array of strings
     - For "delete_lock": boolean
+    - For "schedules": array of schedule objects (with name, when, action, and
+    optional args fields).
+    Use action "exec" together with args to execute a command at the scheduled
+    time.
+    - For "autokill": object with time_ms and num_requests fields
+    - For "hostname": string (valid DNS label)
+    - For "roms": array of ROM objects (with name and image fields) for SET/ADD,
+    or array of ROM names for DEL
+    - For "dependencies": array of instance identifiers (name or UUID)
+    - For "sched_priority": SchedPriority enum value ("normal", "medium",
+    "high", "admin")
     """
 
 
 class UpdateVolumesRequestItem(BaseModel):
-    """A single request item for updating a volume."""
+    """A single update operation to be applied to a volume."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The name of the resource."""
     id: str | None = None
-    """
-    (Optional).  A client-provided identifier for tracking this operation in the
-    response.
-    """
-    prop: MutableVolumeProperty | None = None
+    """A client-provided identifier for tracking this operation in the response."""
+    prop: MutableVolumeProperty
     """The property to modify."""
-    op: MutableVolumeOperation | None = None
+    op: MutableVolumeOperation
     """The operation to perform."""
     value: Any | None = None
     """
     The value for the update operation. The type depends on the property and
     operation:
-    - For "size_mb": unsigned integer
-    - For "quota_policy": "static" or "dynamic"
-    - For "tags": array of Strings
+    - For "image": string
+    - For "args": string or array of strings
+    - For "env": object (for SET/ADD) or string/array of strings (for DEL)
+    - For "memory_mb": integer
+    - For "vcpus": integer
+    - For "scale_to_zero": object with cooldown_time_ms, policy, and stateful
+    fields
+    - For "tags": array of strings
     - For "delete_lock": boolean
+    - For "schedules": array of schedule objects (with name, when, action, and
+    optional args fields).
+    Use action "exec" together with args to execute a command at the scheduled
+    time.
+    - For "autokill": object with time_ms and num_requests fields
+    - For "hostname": string (valid DNS label)
+    - For "roms": array of ROM objects (with name and image fields) for SET/ADD,
+    or array of ROM names for DEL
+    - For "dependencies": array of instance identifiers (name or UUID)
+    - For "sched_priority": SchedPriority enum value ("normal", "medium",
+    "high", "admin")
     """
-    uuid: str | None = None
-    """The UUID of the volume to update.  Mutually exclusive with name."""
-    name: str | None = None
-    """The name of the volume to update.  Mutually exclusive with UUID."""
 
 
 class UpdateVolumesResponse(BaseModel):
-    """The response message for updating one or more volume(s)."""
+    """
+    The response message for updating one or more volume(s) given their
+    UUID(s) or name(s).
+    """
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -6298,22 +6382,18 @@ class UpdateVolumesResponse(BaseModel):
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information about the status."""
     data: UpdateVolumesResponseData | None = None
     """The response data for this request."""
     errors: list[ResponseError] | None = None
     """A list of errors which may have occurred during the request."""
     op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
+    """The operation time in microseconds."""
 
 
 class UpdateVolumesResponseData(BaseModel):
+    """The response data for this request."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -6321,150 +6401,29 @@ class UpdateVolumesResponseData(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     volumes: list[UpdateVolumesResponseUpdatedVolume] | None = None
-    """List of volumes that were processed during the update operation."""
 
 
 class UpdateVolumesResponseUpdatedVolume(BaseModel):
+    """Per-item result for an update volumes operation."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    uuid: str | None = None
-    """The UUID of the volume that was updated."""
-    name: str | None = None
-    """The name of the volume that was updated."""
     status: ResponseStatus | None = None
-    """The status of this particular volume update operation."""
-    id: str | None = None
-    """(Optional).  The client-provided ID from the request."""
+    """Indicates whether the operation was successful for this item."""
     message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
+    """An optional message providing additional information."""
     error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-
-
-class User(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
+    """An optional error code."""
     uuid: str | None = None
-    """The UUID of the user."""
+    """The UUID of the resource."""
     name: str | None = None
-    """The name of the user."""
-    auth_token: list[str] | None = None
-    """Authentication token(s) associated with the user."""
-    permissions: list[UserPermission] | None = None
-    """The permission level of the user."""
-    uid: int | None = None
-    """The user ID (UID) on the host system."""
-    disabled: bool | None = None
-    """Whether the user account is disabled."""
-    vmdb: UserVmdb | None = None
-    """Per-VM Configuration limits for the user."""
-    net: UserNet | None = None
-    """Network configuration limits for the user."""
-    vmm: UserVmm | None = None
-    """Global VM configuration limits for the user."""
-    stor: UserStor | None = None
-    """Storage configuration limits for the user."""
-    autoscale: UserAutoscale | None = None
-    """Autoscale configuration limits for the user."""
-
-
-class UserAutoscale(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    min_size: int | None = None
-    """Minimum size of an autoscale group."""
-    max_size: int | None = None
-    """Maximum size of an autoscale group."""
-
-
-class UserNet(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    max_service_groups: int | None = None
-    """Maximum number of service groups the user can have at one moment."""
-    max_services: int | None = None
-    """
-    Maximum number of services across all service groups the user can have
-    at one moment.
-    """
-    max_certificates: int | None = None
-    """Maximum number of TLS certificates the user can have at one moment."""
-
-
-class UserStor(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    max_volumes: int | None = None
-    """Maximum number of volumes the user can have at one moment."""
-    min_volume_mb: int | None = None
-    """Minimum size of a volume in MB."""
-    max_volume_mb: int | None = None
-    """Maximum size of a volume in MB."""
-    max_total_volume_mb: int | None = None
-    """Maximum total size of all volumes in MB."""
-
-
-class UserVmdb(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    max_instances: int | None = None
-    """Maximum number of VM instances the user can have at one moment."""
-    min_memory_mb: int | None = None
-    """Minimum amount of memory assigned to a VM in MB."""
-    def_memory_mb: int | None = None
-    """Default amount of memory assigned to a VM in MB."""
-    max_memory_mb: int | None = None
-    """Maximum amount of memory assigned to a VM in MB."""
-    min_vcpus: int | None = None
-    """Minimum number of vCPUs assigned to a VM."""
-    max_vcpus: int | None = None
-    """Maximum number of vCPUs assigned to a VM."""
-
-
-class UserVmm(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    max_vcpus: int | None = None
-    """Maximum number of vCPUs the user can have assigned to live instances."""
-    max_memory_mb: int | None = None
-    """
-    Maximum amount of memory in MB the user can have assigned to live
-    instances.
-    """
+    """The human-readable name of the resource."""
+    id: str | None = None
+    """The client-provided ID from the request."""
 
 
 class Volume(BaseModel):
@@ -6476,23 +6435,16 @@ class Volume(BaseModel):
     # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
     uuid: str | None = None
-    """
-    The UUID of the volume.
-
-    This is a unique identifier for the volume that is generated when the
-    volume is created.  The UUID is used to reference the volume in
-    API calls and can be used to identify the volume in all API calls that
-    require an identifier.
-    """
+    """The UUID of the resource."""
     name: str | None = None
-    """
-    The name of the volume.
-
-    This is a human-readable name that can be used to identify the volume.
-    The name must be unique within the context of your account.  The name can
-    also be used to identify the volume in API calls.
-    """
+    """The human-readable name of the resource."""
     created_at: datetime | None = None
     """The time the volume was created."""
     state: VolumeState | None = None
@@ -6517,23 +6469,6 @@ class Volume(BaseModel):
     Maximum 16 tags are allowed, and each tag may not be longer than 256
     characters.
     """
-    status: ResponseStatus | None = None
-    """
-    An optional field representing the status of the request.  This field is
-    only set when this message object is used as a response message.
-    """
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is only set when this message object is used as a response
-    message, and is useful when the status is not `success`.
-    """
     quota_policy: VolumeQuotaPolicy | None = None
     """Either static or dynamic reservation."""
     delete_lock: bool | None = None
@@ -6551,20 +6486,24 @@ class Volume(BaseModel):
     This field is only available for managed volumes and users with
     appropriate permissions.
     """
-    args: dict[str, str] | None = None
-    """
-    Optional script arguments that were applied to the custom volume filesystem
-    initialization scripts.
-    """
     access_mode: VolumeAccessMode | None = None
     """
     The access mode of the volume, controlling volume sharing behavior.
     Defaults to `rwo` if not specified.
     """
+    uid: int | None = None
+    """Guest UID for managed volumes (host_path mode only)."""
+    gid: int | None = None
+    """Guest GID for managed volumes (host_path mode only)."""
+    args: dict[str, str] | None = None
+    """
+    Optional script arguments that were applied to the custom volume filesystem
+    initialization scripts.
+    """
 
 
 class VolumeInstanceID(BaseModel):
-    """Reference to the instance to attach the volume to."""
+    """An instance a volume is attached to."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -6573,12 +6512,24 @@ class VolumeInstanceID(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     uuid: str | None = None
-    """The UUID of the instance that the volume is attached to."""
+    """
+    The UUID of the instance. This is a unique identifier for the instance
+    that is generated when the instance is created. The UUID is used to
+    reference the instance in API calls and can be used to identify the
+    instance in all API calls that require an instance identifier.
+    """
     name: str | None = None
-    """The name of the instance that the volume is attached to."""
+    """
+    The name of the instance. This is a human-readable name that can be used
+    to identify the instance. The name must be unique within the context of
+    your account. If no name is specified, a random name is generated for
+    you. The name can also be used to identify the instance in API calls.
+    """
 
 
 class VolumeInstanceMount(BaseModel):
+    """An instance mount of a volume."""
+
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
@@ -6593,153 +6544,34 @@ class VolumeInstanceMount(BaseModel):
     """Whether the volume is mounted read-only or read-write."""
 
 
-class WaitInstanceByUUIDRequestBody(BaseModel):
-    """Wait parameters."""
+AuditObjectType = Literal["i", "v"] | str
+"""
+The kind of object an audit event is about.
 
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
+Open: the controller emits the ukpd object prefixes, and events for further
+object kinds are added without a breaking change.
+"""
 
-    state: InstanceState | None = None
-    """The desired state to wait for.  Default is `running`."""
-    timeout_ms: int | None = None
-    """
-    Deprecated: Use `timeout_s` instead. Timeout in milliseconds to
-    wait for the instance to reach the desired state.  If `timeout_s` is
-    not set, this value is converted by rounding up to the next full
-    second. A value of -1 means to wait indefinitely.
-    """
-    timeout_s: int | None = None
-    """
-    Timeout in seconds to wait for the instance to reach the desired
-    state. If the timeout is reached, the request will fail with an
-    error. A value of -1 means to wait indefinitely until the instance
-    reaches the desired state.  No wait performed for a value of 0.
-    """
+AuditOperationKind = Literal["start", "stop", "drain", "suspend", "restart"] | str
+"""
+What an operation was performed on the object.
 
-
-class WaitInstancesRequestItem(BaseModel):
-    """A single wait operation to be applied to an instance."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    state: InstanceState | None = None
-    """The desired state to wait for.  Default is `running`."""
-    timeout_ms: int | None = None
-    """
-    Deprecated: Use `timeout_s` instead. Timeout in milliseconds to
-    wait for the instance to reach the desired state. If `timeout_s` is
-    not set, this value is converted by rounding up to the next full
-    second. A value of -1 means to wait indefinitely.
-    """
-    timeout_s: int | None = None
-    """
-    Timeout in seconds to wait for the instance to reach the desired
-    state. If the timeout is reached, the request will fail with an
-    error. A value of -1 means to wait indefinitely until the instance
-    reaches the desired state. No wait performed for a value of 0.
-    """
-    uuid: str | None = None
-    """The UUID of the instance to wait for.  Mutually exclusive with name."""
-    name: str | None = None
-    """The name of the instance to wait for.  Mutually exclusive with UUID."""
-
-
-class WaitInstancesResponse(BaseModel):
-    """
-    The response message for waiting for one or more instance(s) to reach a
-    certain state given their UUID(s) or name(s).
-    """
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    status: ResponseStatus | None = None
-    """The status of the response."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    data: WaitInstancesResponseData | None = None
-    """The response data for this request."""
-    errors: list[ResponseError] | None = None
-    """A list of errors which may have occurred during the request."""
-    op_time_us: int | None = None
-    """
-    The operation time in microseconds.  This is the time it took to process
-    the request and generate the response.
-    """
-
-
-class WaitInstancesResponseData(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    instances: list[WaitInstancesResponseWaitedInstance] | None = None
-    """The instance(s) which this requested waited on."""
-
-
-class WaitInstancesResponseWaitedInstance(BaseModel):
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    uuid: str | None = None
-    """The UUID of the instance."""
-    name: str | None = None
-    """The name of the instance."""
-    state: InstanceState | None = None
-    """The current state of the instance."""
-    message: str | None = None
-    """
-    An optional message providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    error: int | None = None
-    """
-    An optional error code providing additional information about the status.
-    This field is useful when the status is not `success`.
-    """
-    status: ResponseStatus | None = None
-    """The status of the response."""
+Open: the set depends on the object type, and instances carry
+`start`, `stop`, `drain`, `suspend` and `restart`.
+"""
 
 
 # Annotations are deferred, so a model may name one defined further down. This
 # resolves them all now: a reference that cannot be resolved becomes an error on
 # import rather than a surprise at the first request.
 for _model in (
-    AddUsersRequest,
-    AddUsersResponse,
-    AddUsersResponseData,
-    AttachVolumeByUUIDRequestBody,
-    AttachVolumesRequestItem,
-    AttachVolumesResponse,
-    AttachVolumesResponseAttachedVolume,
-    AttachVolumesResponseData,
+    AuditAttribution,
+    AuditEvent,
+    AuditEventData,
+    AuditObject,
+    AuditStop,
     AutoscalePolicy,
     AutoscalePolicyStep,
-    Certificate,
-    CheckpointHistoryEntry,
-    CloneVolumeByUUIDRequestBody,
-    CloneVolumesRequestItem,
-    CloneVolumesResponse,
-    CloneVolumesResponseData,
-    CloneVolumesResponseVolume,
     ConfigurationInstanceCreateArgs,
     CreateAutoscaleConfigurationByServiceGroupUUIDRequest,
     CreateAutoscaleConfigurationByServiceGroupUUIDRequestInstanceCreateArgs,
@@ -6751,9 +6583,55 @@ for _model in (
     CreateAutoscaleConfigurationsResponse,
     CreateAutoscaleConfigurationsResponseConfigurationsResponse,
     CreateAutoscaleConfigurationsResponseData,
+    DeleteAutoscaleConfigurationPolicyResponse,
+    DeleteAutoscaleConfigurationPolicyResponseData,
+    DeleteAutoscaleConfigurationPolicyResponsePoliciesResponse,
+    DeleteAutoscaleConfigurationsResponse,
+    DeleteAutoscaleConfigurationsResponseData,
+    DeleteAutoscaleConfigurationsResponseServiceGroup,
+    DeletePolicyRequest,
+    GetAutoscaleConfigurationPolicyRequest,
+    GetAutoscaleConfigurationPolicyResponse,
+    GetAutoscaleConfigurationPolicyResponseData,
+    GetAutoscaleConfigurationPolicyResponsePolicyResponse,
+    GetAutoscaleConfigurationsResponse,
+    GetAutoscaleConfigurationsResponseData,
+    GetAutoscaleConfigurationsResponseServiceGroup,
+    InstanceCreateArgsInstanceCreateRequestRoms,
+    ServiceGroupTemplate,
+    Certificate,
+    CertificateValidation,
     CreateCertificateRequest,
     CreateCertificateResponse,
     CreateCertificateResponseData,
+    DeleteCertificatesResponse,
+    DeleteCertificatesResponseData,
+    DeleteCertificatesResponseDeletedCertificate,
+    GetCertificatesResponse,
+    GetCertificatesResponseData,
+    UpdateCertificateByUUIDRequestBody,
+    UpdateCertificatesRequestItem,
+    UpdateCertificatesResponse,
+    UpdateCertificatesResponseData,
+    ID,
+    InlineFile,
+    NameOrUUID,
+    ResponseError,
+    GetImagesRequestTagOrDigest,
+    GetImagesResponse,
+    GetImagesResponseData,
+    Image,
+    PinImageRequestItem,
+    PinImageRequestItemAutokill,
+    PinImagesResponse,
+    PinImagesResponseData,
+    PinImagesResponseImage,
+    UnpinImageRequestItem,
+    UnpinImagesResponse,
+    UnpinImagesResponseData,
+    UnpinImagesResponseImage,
+    CheckpointAutokill,
+    CheckpointHistoryEntry,
     CreateCheckpointInstancesRequestItem,
     CreateCheckpointInstancesResponse,
     CreateCheckpointInstancesResponseCheckpointInstance,
@@ -6770,33 +6648,10 @@ for _model in (
     CreateInstanceResponse,
     CreateInstanceResponseData,
     CreateInstanceScaleToZero,
-    CreateServiceGroupRequest,
-    CreateServiceGroupRequestAutokill,
-    CreateServiceGroupRequestDomain,
-    CreateServiceGroupResponse,
-    CreateServiceGroupResponseData,
     CreateTemplateInstancesRequestItem,
     CreateTemplateInstancesResponse,
     CreateTemplateInstancesResponseData,
     CreateTemplateInstancesResponseTemplateInstance,
-    CreateTemplateVolumesResponse,
-    CreateTemplateVolumesResponseData,
-    CreateTemplateVolumesResponseTemplateVolume,
-    CreateVolumeRequest,
-    CreateVolumeResponse,
-    CreateVolumeResponseData,
-    CreateVolumeResponseVolume,
-    DataLicense,
-    DataResult,
-    DeleteAutoscaleConfigurationPolicyResponse,
-    DeleteAutoscaleConfigurationPolicyResponseData,
-    DeleteAutoscaleConfigurationPolicyResponsePoliciesResponse,
-    DeleteAutoscaleConfigurationsResponse,
-    DeleteAutoscaleConfigurationsResponseData,
-    DeleteAutoscaleConfigurationsResponseServiceGroup,
-    DeleteCertificatesResponse,
-    DeleteCertificatesResponseData,
-    DeleteCertificatesResponseDeletedCertificate,
     DeleteCheckpointInstancesResponse,
     DeleteCheckpointInstancesResponseCheckpointInstance,
     DeleteCheckpointInstancesResponseData,
@@ -6805,42 +6660,14 @@ for _model in (
     DeleteInstancesResponse,
     DeleteInstancesResponseData,
     DeleteInstancesResponseInstance,
-    DeletePolicyRequest,
-    DeleteServiceGroupsResponse,
-    DeleteServiceGroupsResponseData,
-    DeleteServiceGroupsResponseDeletedServiceGroup,
     DeleteTemplateInstancesResponse,
     DeleteTemplateInstancesResponseData,
     DeleteTemplateInstancesResponseTemplateInstance,
-    DeleteTemplateVolumesResponse,
-    DeleteTemplateVolumesResponseData,
-    DeleteTemplateVolumesResponseTemplateVolume,
-    DeleteVolumesResponse,
-    DeleteVolumesResponseData,
-    DeleteVolumesResponseDeletedVolume,
-    DetachVolumeByUUIDRequestBody,
-    DetachVolumesRequestItem,
-    DetachVolumesResponse,
-    DetachVolumesResponseData,
-    DetachVolumesResponseDetachedVolume,
-    Domain,
-    GetAutoscaleConfigurationPolicyRequest,
-    GetAutoscaleConfigurationPolicyResponse,
-    GetAutoscaleConfigurationPolicyResponseData,
-    GetAutoscaleConfigurationPolicyResponsePolicyResponse,
-    GetAutoscaleConfigurationsResponse,
-    GetAutoscaleConfigurationsResponseData,
-    GetAutoscaleConfigurationsResponseServiceGroup,
-    GetCertificatesResponse,
-    GetCertificatesResponseData,
     GetCheckpointHistoryResponse,
     GetCheckpointHistoryResponseData,
     GetCheckpointHistoryResponseInstanceHistory,
     GetCheckpointInstancesResponse,
     GetCheckpointInstancesResponseData,
-    GetImagesRequestTagOrDigest,
-    GetImagesResponse,
-    GetImagesResponseData,
     GetInstanceLogsByUUIDRequestBody,
     GetInstancesLogsRequestItem,
     GetInstancesLogsResponse,
@@ -6853,22 +6680,12 @@ for _model in (
     GetInstancesMetricsResponseInstanceMetrics,
     GetInstancesResponse,
     GetInstancesResponseData,
-    GetServiceGroupsResponse,
-    GetServiceGroupsResponseData,
     GetTemplateInstancesResponse,
     GetTemplateInstancesResponseData,
-    GetTemplateVolumesResponse,
-    GetTemplateVolumesResponseData,
-    GetVolumesResponse,
-    GetVolumesResponseData,
-    HealthzResponse,
-    HealthzResponseData,
-    Image,
     ImageSpec,
-    InlineFile,
     Instance,
     InstanceAutokill,
-    InstanceCreateArgsInstanceCreateRequestRoms,
+    InstanceGpu,
     InstanceNetworkInterface,
     InstanceNetworkInterfaceRelay,
     InstancePendingUpdate,
@@ -6881,21 +6698,9 @@ for _model in (
     InstanceTemplateAutokill,
     InstanceVolume,
     ItemAutokill,
-    NameOrUUID,
     NetworkInterfaceRelay,
-    Quotas,
-    QuotasLimits,
-    QuotasResponse,
-    QuotasResponseData,
-    QuotasStats,
-    ResponseError,
     Schedule,
-    Service,
-    ServiceGroup,
-    ServiceGroupAutokill,
-    ServiceGroupInstance,
     ServiceGroupInstanceDomain,
-    ServiceGroupTemplate,
     StartInstanceByUUIDRequestBody,
     StartInstancesRequestItem,
     StartInstancesResponse,
@@ -6912,10 +6717,6 @@ for _model in (
     SuspendInstancesResponseData,
     SuspendInstancesResponseSuspendedInstance,
     TemplateAutokill,
-    UpdateCertificateByUUIDRequestBody,
-    UpdateCertificatesRequestItem,
-    UpdateCertificatesResponse,
-    UpdateCertificatesResponseData,
     UpdateCheckpointInstanceByUUIDRequestBody,
     UpdateCheckpointInstancesRequestItem,
     UpdateCheckpointInstancesResponse,
@@ -6926,16 +6727,76 @@ for _model in (
     UpdateInstancesResponse,
     UpdateInstancesResponseData,
     UpdateInstancesResponseUpdatedInstance,
-    UpdateServiceGroupByUUIDRequestBody,
-    UpdateServiceGroupsRequestItem,
-    UpdateServiceGroupsResponse,
-    UpdateServiceGroupsResponseData,
-    UpdateServiceGroupsResponseUpdatedServiceGroup,
     UpdateTemplateInstanceByUUIDRequestBody,
     UpdateTemplateInstancesRequestItem,
     UpdateTemplateInstancesResponse,
     UpdateTemplateInstancesResponseData,
     UpdateTemplateInstancesResponseTemplateInstance,
+    WaitInstanceByUUIDRequestBody,
+    WaitInstancesRequestItem,
+    WaitInstancesResponse,
+    WaitInstancesResponseData,
+    WaitInstancesResponseWaitedInstance,
+    DataLicense,
+    HealthzResponse,
+    HealthzResponseData,
+    CreateServiceGroupRequest,
+    CreateServiceGroupRequestAutokill,
+    CreateServiceGroupRequestDomain,
+    CreateServiceGroupResponse,
+    CreateServiceGroupResponseData,
+    DeleteServiceGroupsResponse,
+    DeleteServiceGroupsResponseData,
+    DeleteServiceGroupsResponseDeletedServiceGroup,
+    Domain,
+    GetServiceGroupsResponse,
+    GetServiceGroupsResponseData,
+    Service,
+    ServiceGroup,
+    ServiceGroupAutokill,
+    ServiceGroupInstance,
+    UpdateServiceGroupByUUIDRequestBody,
+    UpdateServiceGroupsRequestItem,
+    UpdateServiceGroupsResponse,
+    UpdateServiceGroupsResponseData,
+    UpdateServiceGroupsResponseUpdatedServiceGroup,
+    Quotas,
+    QuotasLimits,
+    QuotasResponse,
+    QuotasResponseData,
+    QuotasStats,
+    AttachVolumeByUUIDRequestBody,
+    AttachVolumesRequestItem,
+    AttachVolumesResponse,
+    AttachVolumesResponseAttachedVolume,
+    AttachVolumesResponseData,
+    CloneVolumeByUUIDRequestBody,
+    CloneVolumesRequestItem,
+    CloneVolumesResponse,
+    CloneVolumesResponseData,
+    CloneVolumesResponseVolume,
+    CreateTemplateVolumesResponse,
+    CreateTemplateVolumesResponseData,
+    CreateTemplateVolumesResponseTemplateVolume,
+    CreateVolumeRequest,
+    CreateVolumeResponse,
+    CreateVolumeResponseData,
+    CreateVolumeResponseVolume,
+    DeleteTemplateVolumesResponse,
+    DeleteTemplateVolumesResponseData,
+    DeleteTemplateVolumesResponseTemplateVolume,
+    DeleteVolumesResponse,
+    DeleteVolumesResponseData,
+    DeleteVolumesResponseDeletedVolume,
+    DetachVolumeByUUIDRequestBody,
+    DetachVolumesRequestItem,
+    DetachVolumesResponse,
+    DetachVolumesResponseData,
+    DetachVolumesResponseDetachedVolume,
+    GetTemplateVolumesResponse,
+    GetTemplateVolumesResponseData,
+    GetVolumesResponse,
+    GetVolumesResponseData,
     UpdateTemplateVolumeByUUIDRequestBody,
     UpdateTemplateVolumesRequestItem,
     UpdateTemplateVolumesResponse,
@@ -6946,19 +6807,8 @@ for _model in (
     UpdateVolumesResponse,
     UpdateVolumesResponseData,
     UpdateVolumesResponseUpdatedVolume,
-    User,
-    UserAutoscale,
-    UserNet,
-    UserStor,
-    UserVmdb,
-    UserVmm,
     Volume,
     VolumeInstanceID,
     VolumeInstanceMount,
-    WaitInstanceByUUIDRequestBody,
-    WaitInstancesRequestItem,
-    WaitInstancesResponse,
-    WaitInstancesResponseData,
-    WaitInstancesResponseWaitedInstance,
 ):
     _model.model_rebuild()

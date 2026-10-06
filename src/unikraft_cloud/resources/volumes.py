@@ -373,6 +373,7 @@ class Volumes(Resource[VolumesApi]):
                 fetch=lambda target: self.read(target, opts),
                 what=f"volume {describe_ref(ref)}",
                 options=call,
+                lookup=True,
             ),
         )
 

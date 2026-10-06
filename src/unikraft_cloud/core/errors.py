@@ -47,6 +47,8 @@ class ResponseError:
     uuid: str | None = None
     #: The name of the item that failed, when the API names it that way.
     name: str | None = None
+    #: The state the item was in, when the API reports it beside the failure.
+    state: str | None = None
 
 
 class UnikraftCloudError(Exception):
@@ -101,7 +103,23 @@ class AuthenticationError(UnikraftCloudError):
 
 
 class NotFoundError(UnikraftCloudError):
-    """The resource does not exist (404)."""
+    """The resource does not exist (404), or the API named it as missing."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: ErrorKind = "http",
+        status: int | None = 404,
+        errors: tuple[ResponseError, ...] | None = None,
+        body: Any = None,
+        absent: bool = False,
+    ) -> None:
+        super().__init__(message, kind=kind, status=status, errors=errors, body=body)
+        #: Whether the resource itself was found missing -- by a search, by a
+        #: read that came back empty, or by the API's own not-found code --
+        #: rather than a route or a listing being gone.
+        self.absent = absent
 
 
 class AlreadyExistsError(UnikraftCloudError):

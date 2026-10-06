@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 from urllib.parse import quote
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
@@ -27,7 +26,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DestroyNodeResponse:
         """Delete Node Nodes"""
-        return await self._request(
+        return await self.request(
             models.DestroyNodeResponse,
             method="DELETE",
             path="/v1/nodes",
@@ -50,7 +49,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DestroyNodeResponse:
         """Delete Node Node by UUID"""
-        return await self._request(
+        return await self.request(
             models.DestroyNodeResponse,
             method="DELETE",
             path=f"/v1/nodes/{quote(uuid, safe='')}",
@@ -71,7 +70,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.ListNodesResponse:
         """Get Node Node by UUID"""
-        return await self._request(
+        return await self.request(
             models.ListNodesResponse,
             method="GET",
             path=f"/v1/nodes/{quote(uuid, safe='')}",
@@ -90,7 +89,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.ListMachineTypesResponse:
         """List Machine Types"""
-        return await self._request(
+        return await self.request(
             models.ListMachineTypesResponse,
             method="GET",
             path=f"/v1/nodes/providers/{quote(cloudprovider, safe='')}/types",
@@ -117,7 +116,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.ListNodesResponse:
         """List Node Nodes"""
-        return await self._request(
+        return await self.request(
             models.ListNodesResponse,
             method="GET",
             path="/v1/nodes",
@@ -144,7 +143,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.ListRegionsResponse:
         """List Regions"""
-        return await self._request(
+        return await self.request(
             models.ListRegionsResponse,
             method="GET",
             path=f"/v1/nodes/providers/{quote(cloudprovider, safe='')}/regions",
@@ -162,7 +161,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.ProvisionNodeResponse:
         """Create Node Node"""
-        return await self._request(
+        return await self.request(
             models.ProvisionNodeResponse,
             method="POST",
             path="/v1/nodes",
@@ -182,7 +181,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateNodesResponse:
         """Update Node Node by UUID"""
-        return await self._request(
+        return await self.request(
             models.UpdateNodesResponse,
             method="PATCH",
             path=f"/v1/nodes/{quote(uuid, safe='')}",
@@ -204,7 +203,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateNodesResponse:
         """Update Node Nodes"""
-        return await self._request(
+        return await self.request(
             models.UpdateNodesResponse,
             method="PATCH",
             path="/v1/nodes",
@@ -230,7 +229,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.WaitNodesResponse:
         """Wait for Node Node State by UUID"""
-        return await self._request(
+        return await self.request(
             models.WaitNodesResponse,
             method="GET",
             path=f"/v1/nodes/{quote(uuid, safe='')}/wait",
@@ -255,7 +254,7 @@ class NodeServiceApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.WaitNodesResponse:
         """Wait for Node Nodes States"""
-        return await self._request(
+        return await self.request(
             models.WaitNodesResponse,
             method="GET",
             path="/v1/nodes/wait",

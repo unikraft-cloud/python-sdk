@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
 from . import models_gen as models
@@ -28,11 +27,44 @@ class NodeActivationServiceApi(ApiClient):
         Activates a new node, or renews an existing node's license. For first-time
         activation, a secret must be provided. For renewal, the CSR self-signature
         is used as proof of key possession and the secret is omitted.
+
+        A renewal request may optionally also carry an HTTP message signature
+        (RFC 9421) made with the node's current stable private key. When present
+        and valid, it authorizes the CSR's public key to become the node's new
+        stable identity even if it differs from the current one -- i.e. key
+        rotation: prove who you are with the old key, then switch to the new one
+        named in the CSR.
         """
-        return await self._request(
+        return await self.request(
             models.NodeActivateResponse,
             method="POST",
             path="/v1/nodes/activate",
+            body=body,
+            headers=headers,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    async def node_deactivate(
+        self,
+        *,
+        body: models.NodeDeactivateRequest,
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> models.NodeDeactivateResponse:
+        """
+        Deactivates a node's license so it can no longer renew. The node's
+        issued certificate remains valid until it naturally expires -- this
+        only prevents renewal. The request must carry an HTTP message signature
+        (RFC 9421) made with the node's stable private key; the node is
+        identified by the signature, the same mechanism used by the private
+        node-facing APIs (e.g. NodeHeartbeat).
+        """
+        return await self.request(
+            models.NodeDeactivateResponse,
+            method="POST",
+            path="/v1/nodes/deactivate",
             body=body,
             headers=headers,
             base_url=base_url,

@@ -231,14 +231,37 @@ all subclass `UnikraftCloudError`. The API reports some failures inside an other
 envelope, per item; those carry the API's own code on `err.errors[n].code` and are raised
 with the status that says the same thing.
 
+Two failures are caught before anything is sent, and are not `UnikraftCloudError`: a
+property the resource does not have is a `TypeError`, and a request missing a field the
+specification requires -- a service group without its `services`, an instance's `volumes`
+entry without its `at` -- is pydantic's `ValidationError`.
+
 A `wait()` that runs out of time raises `WaitTimeoutError`, which is also a builtin
-`TimeoutError`, and carries the state the API last saw:
+`TimeoutError`, and carries the state the API last saw, with the instances it named on
+`err.errors` -- so a `create()` whose wait lapsed still hands over the instance it made:
 
 ```python
 try:
     await ukc.instances.get(name="web").wait(state="running", timeout_seconds=30)
 except TimeoutError as err:
     print(err.state)  # e.g. "starting"
+```
+
+A `create()` whose instance stopped instead of running -- a node could not pull its
+image, say -- raises `InstanceStoppedError`. The instance is read back so the error
+carries the decoded reason, and every instance read back carries the same decoding as
+its `stop`:
+
+```python
+from unikraft_cloud import InstanceStoppedError, PlatformStopCode
+
+fra = ukc.metro("fra")
+try:
+    await fra.instances.create(image="org/app:latest", autostart=True, timeout_s=30)
+except InstanceStoppedError as err:
+    print(err.stop)  # e.g. "platform stop: image pull failed"
+    if err.stop and err.stop.platform_code == PlatformStopCode.IMAGE_PULL_FAILED:
+        await fra.instances.get(uuid=err.instance.uuid).delete()
 ```
 
 When the API attaches a warning to an answer -- a deprecated field, say -- the SDK
@@ -262,8 +285,8 @@ except MetroFanoutError as err:
 
 ## Resources
 
-`instances`, `volumes`, `services`, `certificates` and `users` hang off any scope —
-`ukc`, `ukc.metro("fra")` or `ukc.metros([...])`.
+`instances`, `templates`, `images`, `volumes`, `services`, `certificates` and `users`
+hang off any scope — `ukc`, `ukc.metro("fra")` or `ukc.metros([...])`.
 
 Creating one takes the properties the API describes as keyword arguments, and a property
 it does not have is a `TypeError` rather than a field the server quietly ignores.
@@ -276,6 +299,131 @@ await ukc.certificates.get(name="tls").update(chain=chain_pem, pkey=key_pem)
 for quota in await ukc.users.quotas():
     print(quota.metro, quota.used, quota.hard)
 ```
+
+### Instances
+
+Beyond the operations above, instances can be addressed by their tags, deleted with a wait
+and a retry while busy, and asked why they stopped:
+
+```python
+# Every instance in scope carrying all of the tags, however many; nothing matched is an
+# empty set, so a cleanup can run again.
+await ukc.instances.each(tags=["batch", "job=42"]).delete(missing_ok=True)
+async for inst in ukc.instances.list(tags=["batch"], details=True):
+    ...
+
+# Wait for the deletion (-1 for as long as the platform allows), forgive an instance
+# that is already gone, and keep trying while something still holds on to it. The read
+# timeout is stretched to outlast the wait only when no `timeout` was given.
+await fra.instances.get(name="relay").delete(timeout_seconds=60, missing_ok=True, retry_busy=20)
+
+from unikraft_cloud import StopReason
+
+inst = await fra.instances.get(name="web")
+if inst.state == "stopped":
+    print(inst.describe_stop())  # e.g. "kernel crash: out of memory (ENOMEM)"
+    if inst.stop and inst.stop.reason & StopReason.KERNEL:
+        print(inst.stop.kernel_code)
+```
+
+### Images
+
+The metros report what their nodes have cached; the registry says what a node can pull.
+`find` and `exists` ask the control plane, which answers from the registry itself, and
+read a reference as the CLI does: a registry host in front is ignored, a bare name is in
+the `official` namespace, and no tag means `latest`.
+
+```python
+for image in await ukc.images.list():
+    print(image.metro, image.url, image.size_in_bytes)
+
+if not await ukc.images.exists("org/app:1.2.3"):
+    build_and_push("org/app:1.2.3")
+found = await ukc.images.find("org/app@sha256:...")  # a tag of that digest, or None
+```
+
+### Templates
+
+A template is a snapshotted instance that new instances are cloned from.
+`prepare` makes sure one exists, building it from an instance specification when it does
+not; `clone` stamps instances out of it. The API types that specification as an instance,
+so its image and its plugins' images are plain references, not objects with a pull policy
+or credentials, and its `gpus` is the list an instance reports, not the count a create
+takes. The instance that becomes the template decides the moment it is snapshotted by
+writing `1` to `/uk/libukp/template_instance`.
+
+```python
+fra = ukc.metro("fra")
+await fra.templates.prepare("worker-v3", create_args={"image": "org/worker:v3", "memory_mb": 1024})
+job = await fra.templates.get(name="worker-v3").clone(
+    roms=[{"name": "job", "at": "/mnt/job", "files": [{"path": "job.json", "data": "{}"}]}],
+    volumes=[{"size_mb": 512, "at": "/tmp"}],
+    features=["delete-on-stop"],
+)
+```
+
+## The sandbox plugin
+
+A plugin is a helper loaded into an instance beside its workload, and reached through the
+instance on the metro that runs it. The sandbox plugin runs commands and moves files
+inside an instance; `sandbox()` on an instance handle is its client, and nothing is sent
+until it is used.
+
+```python
+from unikraft_cloud import ExecTimeoutError
+
+fra = ukc.metro("fra")
+inst = await fra.instances.create(
+    image="org/app:latest",
+    memory_mb=1024,
+    plugins=[{"name": "sandbox", "image": "plugins/sandbox:latest", "config": {}}],
+    autostart=True,
+    timeout_s=60,
+)
+sb = fra.instances.get(uuid=inst.uuid).sandbox()
+await sb.wait_ready(timeout=60)  # until the plugin answers; PluginNotReadyError otherwise
+
+# A shell line, or an argument vector run without a shell. The exit code is reported, not
+# raised; output is collected, and handed over as it arrives if you ask.
+result = await sb.exec("make test", cwd="/app", on_output=lambda chunk: print(chunk.data))
+result = await sb.exec(["python", "-c", "print('no quoting needed')"])
+print(result.exit_code, result.stdout, result.stderr)
+
+# A timeout interrupts the command and waits for it to end; with a grace period a command
+# that ignores the interrupt is given up on, and the error carries it for you to signal.
+try:
+    await sb.exec("./long-build", timeout=600, wait_delay=10, forget=True)
+except ExecTimeoutError as err:
+    await err.command.signal("KILL")
+
+# Start, feed, follow and finish a command yourself.
+cmd = await sb.run("sort")
+await cmd.feed_stdin(b"b\na\n")
+await cmd.close_stdin()
+async for chunk in cmd.stream():  # until the command ends
+    ...
+code = await cmd.wait(timeout=30)  # None while it still runs
+await cmd.delete()  # once it has ended
+
+# Files move in chunks, so no request size limit applies; a download lands whole or not
+# at all.
+await sb.fs.write("/app/config.json", data, parents=True)
+await sb.fs.upload_file("./bundle.tar", "/app/")
+async for piece in sb.fs.stream("/app/out.bin"):
+    ...
+await sb.fs.read_to("/app/out.bin", "./out.bin")
+```
+
+`ExecResult.exit_code` is negative for a command a signal ended: `-2` after the
+interrupt a timeout sends. A command left behind when `exec` fails or is cancelled keeps
+running in the sandbox, for you to signal or forget. `PluginNotReadyError` and
+`ExecTimeoutError` are `UnikraftCloudError` and builtin `TimeoutError` both, like
+`WaitTimeoutError`.
+
+Any other plugin is addressed the same way: `plugin("name")` on an instance handle resolves
+its route once, and `.client(SomeApi)` builds a client there. The sandbox plumbing is
+`ukc.api.plugins.sandbox.for_instance(uuid)`, and the generated clients it wraps come from
+the `unikraft-cloud-plugin-sandbox-api` package.
 
 ## The plumbing layer
 
@@ -291,6 +439,16 @@ await ukc.api.controlplane.metros.list_metros()
 
 # Or per resource, alongside its idiomatic client.
 await ukc.instances.api.get_instance_metrics(uuid=["..."])
+
+# An operation that streams events yields each as it arrives.
+async for event in ukc.api.platform.audit.subscribe_audit_events(tags=["prod"]):
+    print(event.type, event.object.uuid if event.object else None)
+
+# An operation that answers with bytes returns them with their status and headers.
+raw = await ukc.api.plugins.sandbox.for_instance(instance_uuid).commands.get_raw_command_log(
+    command_uuid, "stdout", range="bytes=0-1023"
+)
+print(raw.status, raw.byte_range, raw.total_size, raw.content)
 ```
 
 It can also be used on its own, without the idiomatic layer:
@@ -308,17 +466,31 @@ async with PlatformApi(config) as api:
 
 - [`examples/quickstart.py`](examples/quickstart.py) — create, wait, read logs, list, suspend, delete
 - [`examples/update.py`](examples/update.py) — patch objects and the staged editor
+- [`examples/sandbox.py`](examples/sandbox.py) — run commands and move files through the sandbox plugin
+- [`examples/templates.py`](examples/templates.py) — look an image up, prepare a template, clone it
 - [`examples/plumbing.py`](examples/plumbing.py) — the raw API on its own
 
 ## Development
 
 The `api/platform` and `api/controlplane` packages are generated from the OpenAPI
-specification by [`openapi-gen`](https://github.com/unikraft-cloud) using the templates in
-[`templates/`](templates). Everything else is hand-written. Files ending in `_gen.py` are
-never edited by hand.
+specification by `openapi-gen`, pinned in the Makefile, using the templates in
+[`templates/`](templates). The sandbox plugin's plumbing
+is generated elsewhere, by
+[plugin-sdk](https://github.com/unikraft-cloud/plugin-sdk) from the plugin's own
+specification, and installed as the `unikraft-cloud-plugin-sandbox-api` package.
+Everything else is hand-written. Files ending in `_gen.py` are never edited by hand.
+
+The templates tell request models from response models by name, after the TypeSpec
+convention `<Verb><Resource>Request*`, and by use: a schema whose name contains
+`Request` and not `Response` keeps the fields the specification requires, and so does a
+schema that only requests reach -- through request bodies and the models they name,
+however deep -- so a request missing a required field fails at construction. A schema
+that any response reaches has every field optional, so a partial response always parses,
+and a `Request`-named schema that a response also carries fails to parse when the server
+leaves a required field out.
 
 ```sh
-make generate    # regenerate both plumbing clients from the specs
+make generate    # regenerate the platform and control-plane plumbing from the specs
 make lint        # ruff check + format --check
 make typecheck   # mypy
 make test        # pytest

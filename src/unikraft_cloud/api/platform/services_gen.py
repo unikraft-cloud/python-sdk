@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 from urllib.parse import quote
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
 from . import models_gen as models
 
 
-class ServiceGroupsApi(ApiClient):
-    """Low-level "plumbing" client for the `ServiceGroups` resource.
+class ServicesApi(ApiClient):
+    """Low-level "plumbing" client for the `services` resource.
 
     Methods mirror the OpenAPI specification and return the raw response
     envelope. The idiomatic clients are built on top of this.
@@ -26,7 +25,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.CreateServiceGroupResponse:
         """Create Service Group"""
-        return await self._request(
+        return await self.request(
             models.CreateServiceGroupResponse,
             method="POST",
             path="/v1/services",
@@ -45,7 +44,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteServiceGroupsResponse:
         """Delete Service Group by UUID"""
-        return await self._request(
+        return await self.request(
             models.DeleteServiceGroupsResponse,
             method="DELETE",
             path=f"/v1/services/{quote(uuid, safe='')}",
@@ -63,7 +62,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.DeleteServiceGroupsResponse:
         """Delete Service Groups"""
-        return await self._request(
+        return await self.request(
             models.DeleteServiceGroupsResponse,
             method="DELETE",
             path="/v1/services",
@@ -83,7 +82,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetServiceGroupsResponse:
         """Get Service Group by UUID"""
-        return await self._request(
+        return await self.request(
             models.GetServiceGroupsResponse,
             method="GET",
             path=f"/v1/services/{quote(uuid, safe='')}",
@@ -110,7 +109,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetServiceGroupsResponse:
         """List Service Groups"""
-        return await self._request(
+        return await self.request(
             models.GetServiceGroupsResponse,
             method="GET",
             path="/v1/services",
@@ -138,7 +137,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateServiceGroupsResponse:
         """Update Service Group by UUID"""
-        return await self._request(
+        return await self.request(
             models.UpdateServiceGroupsResponse,
             method="PATCH",
             path=f"/v1/services/{quote(uuid, safe='')}",
@@ -157,7 +156,7 @@ class ServiceGroupsApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.UpdateServiceGroupsResponse:
         """Update Service Groups"""
-        return await self._request(
+        return await self.request(
             models.UpdateServiceGroupsResponse,
             method="PATCH",
             path="/v1/services",

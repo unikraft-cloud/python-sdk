@@ -283,9 +283,7 @@ class Resource(Generic[A]):
 
         if not found:
             raise NotFoundError(
-                f"{self.noun} {describe_ref(ref)} not found in {searched}",
-                kind="http",
-                status=404,
+                f"{self.noun} {describe_ref(ref)} not found in {searched}", absent=True
             )
         return found
 
@@ -376,9 +374,7 @@ class Resource(Generic[A]):
         if missing:
             searched = ", ".join(endpoint.metro for endpoint in endpoints)
             raise NotFoundError(
-                f"{self.noun} {describe_ref(missing[0])} not found in {searched}",
-                kind="http",
-                status=404,
+                f"{self.noun} {describe_ref(missing[0])} not found in {searched}", absent=True
             )
         return found
 

@@ -1,0 +1,1248 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2026, Unikraft GmbH. All rights reserved.
+#
+# The sandbox client against an in-memory plugin: readiness, commands and how
+# they end, output following, and the filesystem. The polling intervals are
+# shortened so a whole command lifecycle takes milliseconds.
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import gc
+import io
+import json
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+from unikraft_cloud import (
+    AlreadyExistsError,
+    AmbiguousRefError,
+    AuthenticationError,
+    ExecTimeoutError,
+    MetroFanoutError,
+    NotFoundError,
+    OutputChunk,
+    PluginNotReadyError,
+    Sandbox,
+    UnikraftCloud,
+    UnikraftCloudError,
+)
+from unikraft_cloud.plugins import sandbox as sandbox_module
+
+from .conftest import envelope
+from .fake_sandbox import FakeCommand, FakeSandbox
+
+NEVER = 10**9
+
+
+@pytest.fixture(autouse=True)
+def _quick_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sandbox_module, "POLL_INTERVAL", 0.001)
+    monkeypatch.setattr(sandbox_module, "POLL_MAX_INTERVAL", 0.002)
+
+
+def cloud(fake: FakeSandbox) -> UnikraftCloud:
+    return UnikraftCloud(token="tok", metro="fra", transport=fake.transport)
+
+
+def sandbox(ukc: UnikraftCloud) -> Sandbox:
+    return ukc.instances.get(uuid="u1").sandbox()
+
+
+def body_of(fake: FakeSandbox, index: int) -> Any:
+    return json.loads(fake.recorder.calls[index].content)
+
+
+class Everywhere(FakeSandbox):
+    """A platform whose every metro lists the instance."""
+
+    def _platform_instances(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and not request.url.path.endswith("/wait"):
+            return httpx.Response(200, json=envelope({"instances": [self.instance]}))
+        return super()._platform_instances(request)
+
+
+class TestReadiness:
+    async def test_ready_is_whether_listing_commands_works(self) -> None:
+        fake = FakeSandbox()
+        fake.unready = 1
+        async with cloud(fake) as ukc:
+            sb = sandbox(ukc)
+            assert await sb.ready() is False
+            assert await sb.ready() is True
+
+    async def test_ready_is_false_for_an_instance_that_cannot_be_found(self) -> None:
+        fake = FakeSandbox(instance_metro="dal")
+        async with cloud(fake) as ukc:
+            # The client is pinned to fra, where no instance of that name is.
+            assert await ukc.instances.get(name="web").sandbox().ready() is False
+        assert fake.plugin_paths() == []
+
+    async def test_wait_ready_returns_as_soon_as_the_plugin_answers(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).wait_ready(timeout=5)
+        assert fake.plugin_paths() == ["/commands"]
+
+    async def test_wait_ready_backs_off_from_a_quarter_second_to_two(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slept: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = FakeSandbox()
+        fake.unready = 5
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).wait_ready(timeout=60)
+        assert slept == [0.25, 0.5, 1.0, 2.0, 2.0]
+        assert fake.plugin_paths() == ["/commands"] * 6
+
+    async def test_a_route_not_found_yet_is_probed_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        # The proxy answers 404 while the plugin boots, and 502 or 504 once
+        # it is routed but not yet serving.
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = FakeSandbox()
+        fake.unready, fake.unready_status = 2, 404
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).wait_ready(timeout=60)
+        assert fake.plugin_paths() == ["/commands"] * 3
+
+    async def test_a_rejected_token_is_raised_at_once(self) -> None:
+        fake = FakeSandbox()
+        fake.unready, fake.unready_status = NEVER, 403
+        async with cloud(fake) as ukc:
+            with pytest.raises(AuthenticationError):
+                await sandbox(ukc).wait_ready(timeout=60)
+            with pytest.raises(AuthenticationError):
+                await sandbox(ukc).ready()
+        assert fake.plugin_paths() == ["/commands"] * 2
+
+    async def test_a_name_held_by_several_instances_is_raised_at_once(self) -> None:
+        fake = Everywhere()
+        async with UnikraftCloud(token="tok", transport=fake.transport) as ukc:
+            sb = ukc.instances.get(name="web").sandbox()
+            with pytest.raises(AmbiguousRefError):
+                await sb.wait_ready(timeout=60)
+            with pytest.raises(AmbiguousRefError):
+                await sb.ready()
+        assert fake.plugin_paths() == []
+
+    async def test_a_zero_timeout_makes_exactly_one_attempt(self) -> None:
+        fake = FakeSandbox()
+        fake.unready = 3
+        async with cloud(fake) as ukc:
+            with pytest.raises(PluginNotReadyError) as caught:
+                await sandbox(ukc).wait_ready(timeout=0)
+        assert (caught.value.plugin, caught.value.attempts) == ("sandbox", 1)
+        assert isinstance(caught.value.__cause__, UnikraftCloudError)
+        assert caught.value.__cause__.status == 503
+        assert isinstance(caught.value, TimeoutError)
+
+    async def test_wait_ready_gives_up_at_the_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = FakeSandbox()
+        fake.unready = NEVER
+        async with cloud(fake) as ukc:
+            with pytest.raises(PluginNotReadyError) as caught:
+                await sandbox(ukc).wait_ready(timeout=0.02)
+        assert caught.value.attempts > 1
+
+    async def test_a_probe_is_bounded_by_what_is_left_of_the_timeout(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).wait_ready(timeout=5)
+        async with UnikraftCloud(
+            token="tok", metro="fra", transport=fake.transport, timeout=2.0
+        ) as ukc:
+            await sandbox(ukc).wait_ready(timeout=5)
+        reads = [
+            call.extensions["timeout"]["read"]
+            for call in fake.recorder.calls
+            if call.url.path.endswith("/commands")
+        ]
+        # The client's unbounded read is bounded by the deadline; a shorter one stands.
+        assert len(reads) == 2 and 0 < reads[0] <= 5 and reads[1] == 2.0
+
+
+class TestCommands:
+    async def test_run_sends_only_what_it_was_given(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            sb = sandbox(ukc)
+            first = await sb.run("echo hi", cwd="/app")
+            second = await sb.run("env", env={"A": "1"})
+        assert body_of(fake, 0) == {"cmd": "echo hi", "cwd": "/app"}
+        assert body_of(fake, 1) == {"cmd": "env", "env": {"A": "1"}}
+        assert (first.uuid, second.uuid) == ("c1", "c2")
+
+    async def test_get_reports_the_command_as_started_and_its_exit_code(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exit_code=3)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("false", cwd="/app")
+            info = await command.get()
+        assert (info.cmdline, info.cwd, info.env, info.exitcode) == ("false", "/app", None, 3)
+
+    async def test_wait_with_a_timeout_reports_a_running_command_as_none(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("sleep 1000")
+            assert await command.wait(timeout=0.01) is None
+            fake.commands["c1"].finish(4)
+            assert await command.wait(timeout=1) == 4
+            assert await command.wait() == 4
+        assert body_of(fake, 1) == {"timeout_s": 0.01}
+        assert body_of(fake, -2) == {"timeout_s": sandbox_module.WAIT_SLICE}
+        assert fake.plugin_paths()[-2:] == ["/commands/c1/wait_timeout", "/commands/c1"]
+
+    async def test_wait_without_a_timeout_outlasts_the_proxy_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "WAIT_SLICE", 0.01)
+        fake = FakeSandbox()
+        fake.proxy_timeout = 0.05
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("sleep 1000")
+            asyncio.get_running_loop().call_later(0.2, fake.commands["c1"].finish, 4)
+            assert await command.wait() == 4
+        paths = fake.plugin_paths()
+        assert "/commands/c1/wait" not in paths
+        assert paths.count("/commands/c1/wait_timeout") > 1
+
+    async def test_a_long_timeout_is_sent_as_waits_under_the_proxy_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "WAIT_SLICE", 0.01)
+        fake = FakeSandbox()
+        fake.proxy_timeout = 0.05
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("sleep 1000")
+            assert await command.wait(timeout=0.2) is None
+        slices = [
+            json.loads(call.content)["timeout_s"]
+            for call in fake.recorder.calls
+            if call.url.path.endswith("/wait_timeout")
+        ]
+        assert len(slices) > 1
+        assert all(s <= 0.01 for s in slices)
+
+    async def test_logs_are_decoded_and_ranged(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"hello world", stderr=b"oops")
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            whole = await command.logs()
+            part = await command.logs(stdout_offset=6, stderr_offset=1, limit=3)
+        assert (whole.stdout, whole.stderr) == (b"hello world", b"oops")
+        assert (whole.stdout_available, whole.stderr_available) == (11, 4)
+        assert (part.stdout, part.stderr) == (b"wor", b"ops")
+        assert body_of(fake, 2) == {
+            "stdout": {"offset": 6, "limit": 3},
+            "stderr": {"offset": 1, "limit": 3},
+        }
+
+    async def test_whole_streams_come_back_verbatim(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"\x00\x01", stderr=b"\xff")
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            assert await command.stdout() == b"\x00\x01"
+            assert await command.stderr() == b"\xff"
+
+    async def test_stdin_is_fed_in_chunks_and_then_closed(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER)
+        data = bytes(range(256)) * 300  # 76800 bytes: two full chunks and a tail
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("cat")
+            await command.feed_stdin(data)
+        writes = fake.commands["c1"].stdin
+        assert [len(chunk) for chunk, _ in writes] == [32768, 32768, 11264, 0]
+        assert [eof for _, eof in writes] == [False, False, False, True]
+        assert b"".join(chunk for chunk, _ in writes) == data
+
+    async def test_stdin_takes_text_and_can_close_in_the_same_request(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("cat")
+            await command.write_stdin("héllo", eof=True)
+        assert fake.commands["c1"].stdin == [("héllo".encode(), True)]
+        assert body_of(fake, 1) == {
+            "data": base64.b64encode("héllo".encode()).decode(),
+            "eof": True,
+        }
+
+    async def test_signals_go_by_number_or_name(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER, heeds_interrupt=False)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            await command.signal(9)
+            await command.signal("TERM")
+        assert fake.commands["c1"].signals == [9, "TERM"]
+
+    async def test_a_signal_that_ends_a_command_is_reported_as_minus_its_number(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER)
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            interrupted = await sandbox(ukc).run("x")
+            terminated = await sandbox(ukc).run("y")
+            await interrupted.signal("INT")
+            await terminated.signal("SIGTERM")
+            assert await interrupted.wait(timeout=5) == -2
+            assert await terminated.wait(timeout=5) == -15
+
+    async def test_a_running_command_cannot_be_deleted_but_a_finished_one_can(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            sb = sandbox(ukc)
+            command = await sb.run("x")
+            with pytest.raises(UnikraftCloudError) as caught:
+                await command.delete()
+            assert caught.value.status == 409
+            fake.commands["c1"].finish(0)
+            await command.delete()
+            assert await sb.commands() == []
+
+    async def test_forgetting_logs_makes_them_gone(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"x")
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            await command.delete_logs()
+            with pytest.raises(UnikraftCloudError) as caught:
+                await command.logs()
+        assert caught.value.status == 410
+
+    async def test_commands_are_listed_and_reattached_by_uuid(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            sb = sandbox(ukc)
+            await sb.run("a")
+            await sb.run("b")
+            listed = await sb.commands()
+            again = sb.command("c2")
+            info = await again.get()
+        assert [c.uuid for c in listed] == ["c1", "c2"]
+        assert info.cmdline == "b"
+
+
+class TestStreaming:
+    async def test_yields_output_as_it_arrives_then_drains_after_the_end(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "LOG_CHUNK_SIZE", 4)
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"abcdefgh", stderr=b"E", exits_after_polls=1)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            chunks = [chunk async for chunk in command.stream()]
+        assert chunks == [
+            OutputChunk("stdout", b"abcd"),
+            OutputChunk("stderr", b"E"),
+            OutputChunk("stdout", b"efgh"),
+        ]
+
+    async def test_waits_for_the_end_alongside_the_polling(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"hi", exits_after_polls=2)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            chunks = [chunk async for chunk in command.stream()]
+        assert b"".join(c.data for c in chunks) == b"hi"
+        paths = fake.plugin_paths()
+        assert "/commands/c1/wait_timeout" in paths
+        assert "/commands/c1/wait" not in paths
+
+    async def test_follows_a_command_that_outlasts_the_proxy_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "WAIT_SLICE", 0.01)
+        fake = FakeSandbox()
+        fake.proxy_timeout = 0.05
+        fake.on_run(stdout=b"done", exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("sleep 1000")
+            asyncio.get_running_loop().call_later(0.2, fake.commands["c1"].finish, 0)
+            chunks = [chunk async for chunk in command.stream()]
+        assert b"".join(c.data for c in chunks) == b"done"
+
+    async def test_gives_up_after_three_failed_polls_in_a_row(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER)
+        fake.failing_polls = 3
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            with pytest.raises(UnikraftCloudError) as caught:
+                [chunk async for chunk in command.stream()]
+        assert caught.value.status == 500
+
+    async def test_recovers_from_fewer_failed_polls(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"ok", exits_after_polls=1)
+        fake.failing_polls = 2
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            chunks = [chunk async for chunk in command.stream()]
+        assert chunks == [OutputChunk("stdout", b"ok")]
+
+
+class TestExec:
+    async def test_collects_the_output_and_exit_code_without_deleting(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"out", stderr=b"err", exit_code=2, exits_after_polls=1)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("make", cwd="/app", env={"CI": "1"})
+        assert (result.uuid, result.exit_code, result.stdout, result.stderr) == (
+            "c1",
+            2,
+            b"out",
+            b"err",
+        )
+        assert result.interrupted is False
+        assert "c1" in fake.commands
+        assert fake.recorder.calls[0].method == "POST"
+        assert body_of(fake, 0) == {"cmd": "make", "cwd": "/app", "env": {"CI": "1"}}
+        assert all(c.method != "DELETE" for c in fake.recorder.calls)
+
+    async def test_feeds_stdin_while_the_command_runs(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"echoed", exits_after_polls=2)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("cat", stdin="input")
+        assert result.stdout == b"echoed"
+        assert fake.commands["c1"].stdin == [(b"input", False), (b"", True)]
+
+    async def test_a_timeout_interrupts_and_then_waits_for_the_end(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"partial", exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("sleep 1000", timeout=0.02)
+        assert fake.commands["c1"].signals == [2]
+        assert (result.exit_code, result.interrupted, result.stdout) == (-2, True, b"partial")
+
+    async def test_a_command_that_ignores_the_interrupt_is_given_up_on(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER, heeds_interrupt=False)
+        async with cloud(fake) as ukc:
+            with pytest.raises(ExecTimeoutError) as caught:
+                await sandbox(ukc).exec("trap '' INT; sleep 1000", timeout=0.02, wait_delay=0.02)
+        assert caught.value.command.uuid == "c1"
+        assert isinstance(caught.value, TimeoutError)
+        assert fake.commands["c1"].signals == [2]
+        assert fake.commands["c1"].running
+
+    async def test_without_a_grace_period_it_waits_for_a_stubborn_command(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=6, exit_code=1, heeds_interrupt=False)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x", timeout=0.001)
+        assert (result.exit_code, result.interrupted) == (1, True)
+
+    async def test_a_feed_that_fails_ends_the_exec_rather_than_the_command(self) -> None:
+        fake = FakeSandbox()
+        fake.failing_stdin = 1
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            with pytest.raises(UnikraftCloudError) as caught:
+                await sandbox(ukc).exec("cat", stdin=b"never arrives", timeout=5)
+        assert caught.value.status == 502
+        # The command waits for input that will not come; it is the caller's now.
+        assert fake.commands["c1"].running
+        assert fake.commands["c1"].stdin == []
+        assert fake.commands["c1"].signals == []
+
+    async def test_an_unencodable_input_is_refused_before_the_command_starts(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(UnicodeEncodeError):
+                await sandbox(ukc).exec("cat", stdin="lone \udc80 surrogate")
+        assert fake.commands == {}
+
+    async def test_the_final_read_of_the_exit_code_is_retried(self) -> None:
+        fake = FakeSandbox()
+        fake.failing_reads = 1
+        fake.on_run(stdout=b"out", exit_code=3, exits_after_polls=1)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x")
+        assert (result.exit_code, result.stdout) == (3, b"out")
+        assert fake.plugin_paths().count("/commands/c1") == 2
+
+    async def test_a_command_that_ends_before_its_input_arrives_reports_its_exit_code(
+        self,
+    ) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exit_code=127, exits_after_polls=0)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("nosuchcmd", stdin=b"never read")
+        # The plugin refused the input of an ended command; the exit code is the story.
+        assert (result.exit_code, result.interrupted) == (127, False)
+        assert fake.commands["c1"].stdin == []
+
+
+class TestFiles:
+    async def test_mkdir_with_and_without_parents(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            fs = sandbox(ukc).fs
+            await fs.mkdir("/app/x")
+            await fs.mkdir("/app/y/z", parents=True)
+        assert fake.dirs == [("/app/x", False), ("/app/y/z", True)]
+
+    async def test_bytes_are_written_as_base64_and_text_as_utf8(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            fs = sandbox(ukc).fs
+            await fs.write("/app/blob", b"\x00\xff")
+            await fs.write("/app/note", "héllo")
+        assert body_of(fake, 0)["encoding"] == "base64"
+        assert body_of(fake, 1)["encoding"] == "utf-8"
+        assert fake.files == {"/app/blob": b"\x00\xff", "/app/note": "héllo".encode()}
+
+    async def test_append_adds_to_a_file(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            fs = sandbox(ukc).fs
+            await fs.write("/app/log", "a")
+            await fs.write("/app/log", "b", append=True)
+        assert fake.files["/app/log"] == b"ab"
+
+    async def test_read_returns_bytes_and_read_text_decodes(self) -> None:
+        fake = FakeSandbox()
+        fake.files["/app/f"] = "héllo".encode()
+        async with cloud(fake) as ukc:
+            fs = sandbox(ukc).fs
+            assert await fs.read("/app/f") == "héllo".encode()
+            assert await fs.read_text("/app/f") == "héllo"
+        assert fake.plugin_paths() == ["/fs/read_raw", "/fs/read_raw"]
+
+    async def test_a_missing_file_is_not_found(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(NotFoundError):
+                await sandbox(ukc).fs.read("/nope")
+
+    async def test_upload_lands_in_a_directory_named_either_way(self) -> None:
+        fake = FakeSandbox()
+        fake.dirs.append(("/app", False))
+        async with cloud(fake) as ukc:
+            fs = sandbox(ukc).fs
+            assert await fs.upload("/app/", "a.bin", b"1") == "/app/a.bin"
+            # Without its slash, the plugin's refusal says the path is a directory.
+            assert await fs.upload("/app", "b.bin", b"2") == "/app/b.bin"
+            assert await fs.upload("/deep/c.txt", "ignored", "3", parents=True) == "/deep/c.txt"
+            # A file that is there is replaced, as the CLI's upload has it.
+            assert await fs.upload("/app/a.bin", "ignored", b"9") == "/app/a.bin"
+        assert fake.files == {"/app/a.bin": b"9", "/app/b.bin": b"2", "/deep/c.txt": b"3"}
+        assert ("/deep", True) in fake.dirs
+        ops = [c.url.path.rsplit("/", 1)[1] for c in fake.recorder.calls if "/fs/" in c.url.path]
+        assert ops == ["write", "write", "write", "mkdir", "write", "write"]
+
+    async def test_upload_wants_a_filename_that_is_one_segment(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(ValueError, match="one path segment"):
+                await sandbox(ukc).fs.upload("/app/", "", b"1")
+            with pytest.raises(ValueError, match="one path segment"):
+                await sandbox(ukc).fs.upload("/app", "a/b", b"1")
+        assert fake.plugin_paths() == []
+
+
+class TestOutputSinks:
+    async def test_output_is_handed_over_as_it_arrives_and_still_collected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "LOG_CHUNK_SIZE", 4)
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"abcdefgh", stderr=b"E", exits_after_polls=1)
+        seen: list[OutputChunk] = []
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x", on_output=seen.append)
+        assert seen == [
+            OutputChunk("stdout", b"abcd"),
+            OutputChunk("stderr", b"E"),
+            OutputChunk("stdout", b"efgh"),
+        ]
+        assert (result.stdout, result.stderr) == (b"abcdefgh", b"E")
+
+    async def test_a_coroutine_sink_is_awaited_before_the_next_chunk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "LOG_CHUNK_SIZE", 2)
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"abcd", exits_after_polls=1)
+        order: list[str] = []
+
+        async def sink(chunk: OutputChunk) -> None:
+            order.append(f"start {chunk.data.decode()}")
+            await asyncio.sleep(0)
+            order.append(f"end {chunk.data.decode()}")
+
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).exec("x", on_output=sink)
+        assert order == ["start ab", "end ab", "start cd", "end cd"]
+
+    async def test_a_sink_that_returns_a_value_is_fine(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"abcd", exits_after_polls=1)
+        sink = io.BytesIO()
+        async with cloud(fake) as ukc:
+            # A file's write returns the count written; it is no awaitable.
+            result = await sandbox(ukc).exec("x", on_output=lambda chunk: sink.write(chunk.data))
+        assert (sink.getvalue(), result.stdout) == (b"abcd", b"abcd")
+
+    async def test_a_sink_that_raises_fails_the_exec_and_keeps_the_command(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"hello", exits_after_polls=NEVER)
+
+        def sink(chunk: OutputChunk) -> None:
+            raise RuntimeError("sink broke")
+
+        async with cloud(fake) as ukc:
+            with pytest.raises(RuntimeError, match="sink broke"):
+                await sandbox(ukc).exec("x", on_output=sink, timeout=5)
+        assert fake.commands["c1"].running
+
+
+class TestForgetting:
+    async def test_forget_drops_the_command_once_it_ended(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(stdout=b"out", exit_code=3, exits_after_polls=1)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x", forget=True)
+        assert (result.exit_code, result.stdout) == (3, b"out")
+        assert "c1" not in fake.commands
+        assert [c.method for c in fake.recorder.calls if c.method == "DELETE"] == ["DELETE"]
+
+    async def test_an_interrupted_command_that_ended_is_forgotten_too(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("sleep 1000", timeout=0.02, forget=True)
+        assert result.interrupted
+        assert "c1" not in fake.commands
+
+    async def test_a_command_given_up_on_is_kept(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER, heeds_interrupt=False)
+        async with cloud(fake) as ukc:
+            with pytest.raises(ExecTimeoutError):
+                await sandbox(ukc).exec("x", timeout=0.02, wait_delay=0.02, forget=True)
+        assert "c1" in fake.commands
+        assert all(c.method != "DELETE" for c in fake.recorder.calls)
+
+
+class TestFileTransfers:
+    async def test_a_large_write_goes_in_appended_pieces(self) -> None:
+        fake = FakeSandbox()
+        data = bytes(range(10))
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).fs.write("/app/blob", data, chunk_size=4)
+        assert fake.files["/app/blob"] == data
+        bodies = [body_of(fake, i) for i in range(3)]
+        assert [len(base64.b64decode(b["data"])) for b in bodies] == [4, 4, 2]
+        assert [b["append"] for b in bodies] == [False, True, True]
+
+    async def test_a_large_text_travels_as_base64_pieces(self) -> None:
+        fake = FakeSandbox()
+        text = "héllo wörld"
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).fs.write("/app/note", text, chunk_size=4)
+        assert fake.files["/app/note"] == text.encode()
+        assert all(body_of(fake, i)["encoding"] == "base64" for i in range(4))
+
+    async def test_an_appended_large_write_appends_from_the_start(self) -> None:
+        fake = FakeSandbox()
+        fake.files["/app/log"] = b"old"
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).fs.write("/app/log", b"12345678", append=True, chunk_size=4)
+        assert fake.files["/app/log"] == b"old12345678"
+
+    async def test_parents_are_made_before_the_write(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            fs = sandbox(ukc).fs
+            await fs.write("/deep/path/f", b"1", parents=True)
+            await fs.write("top", b"2", parents=True)
+        assert fake.dirs == [("/deep/path", True)]
+        assert fake.plugin_paths() == ["/fs/mkdir", "/fs/write", "/fs/write"]
+
+    async def test_upload_file_streams_a_local_file_in_pieces(self, tmp_path: Path) -> None:
+        source = tmp_path / "blob.bin"
+        data = bytes(range(256)) * 3
+        source.write_bytes(data)
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            landed = await sandbox(ukc).fs.upload_file(source, "/app/blob.bin", chunk_size=256)
+        assert landed == "/app/blob.bin"
+        assert fake.files["/app/blob.bin"] == data
+        assert [body_of(fake, i)["append"] for i in range(3)] == [False, True, True]
+
+    async def test_a_large_upload_goes_in_pieces_to_where_a_small_one_lands(self) -> None:
+        fake = FakeSandbox()
+        fake.dirs.append(("/dir", False))
+        async with cloud(fake) as ukc:
+            sb = sandbox(ukc)
+            big = b"abcdefghij"
+            assert await sb.fs.upload("/dir/", "big.bin", big, chunk_size=4) == "/dir/big.bin"
+            # The first piece is what the plugin refuses; the pieces then go inside.
+            assert await sb.fs.upload("/dir", "also.bin", big, chunk_size=4) == "/dir/also.bin"
+            landed = await sb.fs.upload("/deep/exact.bin", "x", big, chunk_size=4, parents=True)
+            assert landed == "/deep/exact.bin"
+        assert fake.files["/dir/big.bin"] == fake.files["/dir/also.bin"] == big
+        assert fake.files["/deep/exact.bin"] == big
+        ops = [c.url.path.rsplit("/", 1)[1] for c in fake.recorder.calls if "/fs/" in c.url.path]
+        assert ops == ["write"] * 3 + ["write"] * 4 + ["mkdir"] + ["write"] * 3
+        assert ("/deep", True) in fake.dirs
+
+    async def test_upload_file_keeps_the_name_inside_a_directory(self, tmp_path: Path) -> None:
+        source = tmp_path / "a.txt"
+        source.write_bytes(b"")
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            landed = await sandbox(ukc).fs.upload_file(source, "/app/in/", parents=True)
+        assert landed == "/app/in/a.txt"
+        assert fake.files["/app/in/a.txt"] == b""
+        assert fake.dirs == [("/app/in", True)]
+
+    async def test_a_file_streams_out_and_can_be_copied_to_disk(self, tmp_path: Path) -> None:
+        fake = FakeSandbox()
+        fake.files["/app/big"] = b"0123456789"
+        target = tmp_path / "out" / "big"
+        target.parent.mkdir()
+        async with cloud(fake) as ukc:
+            fs = sandbox(ukc).fs
+            chunks = [chunk async for chunk in fs.stream("/app/big", chunk_size=4)]
+            size = await fs.read_to("/app/big", target, chunk_size=4)
+        assert chunks == [b"0123", b"4567", b"89"]
+        assert (size, target.read_bytes()) == (10, b"0123456789")
+        assert fake.plugin_paths() == ["/fs/read_raw", "/fs/read_raw"]
+
+    async def test_a_missing_file_fails_before_the_first_chunk(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(NotFoundError):
+                [chunk async for chunk in sandbox(ukc).fs.stream("/nope")]
+
+    async def test_upload_file_lands_inside_a_directory_named_without_its_slash(
+        self, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "blob.bin"
+        source.write_bytes(b"abcdefgh")
+        fake = FakeSandbox()
+        fake.dirs.append(("/app", False))
+        async with cloud(fake) as ukc:
+            landed = await sandbox(ukc).fs.upload_file(source, "/app", chunk_size=4)
+        assert (landed, fake.files["/app/blob.bin"]) == ("/app/blob.bin", b"abcdefgh")
+        ops = [c.url.path.rsplit("/", 1)[1] for c in fake.recorder.calls if "/fs/" in c.url.path]
+        # The first piece is what the plugin refused; the file then went inside whole.
+        assert ops == ["write"] * 3
+
+
+class SlowReads(FakeSandbox):
+    """A platform whose instance reads take a moment."""
+
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self.delay = delay
+        self.reads = 0
+
+    async def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/instances" and request.method == "GET":
+            self.reads += 1
+            await asyncio.sleep(self.delay)
+        return await super().handle(request)
+
+
+class LateInstance(FakeSandbox):
+    """A platform that lists the instance only from the given read on."""
+
+    def __init__(self, listed_from: int) -> None:
+        super().__init__()
+        self.listed_from = listed_from
+        self.reads = 0
+
+    async def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/instances" and request.method == "GET":
+            self.reads += 1
+            if self.reads < self.listed_from:
+                return httpx.Response(200, json=envelope({"instances": []}))
+        return await super().handle(request)
+
+
+class TestResolvingAgain:
+    async def test_a_lookup_the_caller_gave_up_on_still_serves_the_next_call(self) -> None:
+        fake = SlowReads(delay=0.05)
+        async with cloud(fake) as ukc:
+            sb = ukc.instances.get(name="web").sandbox()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(sb.ready(), 0.001)
+            # The lookup went on without its first caller; nobody is poisoned.
+            assert await sb.ready() is True
+            assert (await sb.exec("x")).exit_code == 0
+        assert fake.reads == 1
+
+    async def test_wait_ready_waits_for_an_instance_not_listed_yet(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = LateInstance(listed_from=3)
+        async with cloud(fake) as ukc:
+            sb = ukc.instances.get(name="web").sandbox()
+            await sb.wait_ready(timeout=60)
+            assert await sb.ready() is True
+        assert fake.reads == 3
+        assert fake.plugin_paths() == ["/commands"] * 2
+
+    async def test_wait_ready_searches_every_metro_again_for_an_instance_not_listed_yet(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = LateInstance(listed_from=3)
+        async with UnikraftCloud(token="tok", transport=fake.transport) as ukc:
+            # Account-wide, the name is searched for in every metro; a search
+            # that found nothing is made again rather than kept as the answer.
+            sb = ukc.instances.get(name="web").sandbox()
+            await sb.wait_ready(timeout=60)
+        assert fake.reads >= 3
+        assert fake.plugin_paths() == ["/commands"]
+
+    async def test_an_instance_never_listed_is_a_plugin_not_ready(self) -> None:
+        fake = LateInstance(listed_from=NEVER)
+        async with cloud(fake) as ukc:
+            sb = ukc.instances.get(name="web").sandbox()
+            with pytest.raises(PluginNotReadyError) as caught:
+                await sb.wait_ready(timeout=0)
+        assert isinstance(caught.value.__cause__, NotFoundError)
+        assert isinstance(caught.value, UnikraftCloudError)
+
+    async def test_wait_ready_sleeps_no_longer_than_the_deadline_allows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slept: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = FakeSandbox()
+        fake.unready = 1
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).wait_ready(timeout=0.1)
+        # The first interval would be a quarter second; the deadline is nearer.
+        assert len(slept) == 1 and 0.09 < slept[0] <= 0.1
+
+
+class RefusedCreate(FakeSandbox):
+    """A platform that refuses to create the instance a plugin would run in."""
+
+    def _platform_instances(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(400, json={"status": "error", "message": "no such image"})
+        return super()._platform_instances(request)
+
+
+class ForbiddenLookups(FakeSandbox):
+    """A platform whose every metro refuses the token for an instance lookup."""
+
+    def _platform_instances(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(403, json={"status": "error", "message": "forbidden"})
+        return super()._platform_instances(request)
+
+
+class TestFailuresThatCannotChange:
+    async def test_wait_ready_raises_a_create_that_failed_at_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = RefusedCreate()
+        async with cloud(fake) as ukc:
+            sb = ukc.instances.create(image="org/missing:v1").sandbox()
+            with pytest.raises(UnikraftCloudError) as caught:
+                await sb.wait_ready(timeout=60)
+            assert await sb.ready() is False
+        # The handle keeps the create's one outcome, so probing again would
+        # only raise the same failure again: it is raised as it is, not as a
+        # plugin not ready, and the create is not sent again.
+        assert caught.value.status == 400
+        assert not isinstance(caught.value, PluginNotReadyError)
+        assert [call.method for call in fake.recorder.calls] == ["POST"]
+
+    async def test_a_token_every_metro_refuses_is_raised_at_once(self) -> None:
+        fake = ForbiddenLookups()
+        async with UnikraftCloud(token="tok", transport=fake.transport) as ukc:
+            sb = ukc.instances.get(name="web").sandbox()
+            with pytest.raises(MetroFanoutError) as caught:
+                await sb.wait_ready(timeout=60)
+            assert caught.value.status == 403
+            with pytest.raises(MetroFanoutError):
+                await sb.ready()
+        # One round of lookups per call: nothing was waited out.
+        assert len(fake.recorder.metros("/v1/instances")) == 4
+
+
+class Impatient(FakeSandbox):
+    """A plugin that answers a wait at once instead of holding it for its slice."""
+
+    async def _command(
+        self, request: httpx.Request, command: FakeCommand, op: str, body: dict[str, Any]
+    ) -> httpx.Response:
+        if op == "wait_timeout" and command.running:
+            return httpx.Response(408, json={"status": "error", "message": "still running"})
+        return await super()._command(request, command, op, body)
+
+
+class TestWaitHiccups:
+    async def test_a_wait_answered_early_is_paced_to_its_slice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "POLL_MAX_INTERVAL", 10.0)
+        fake = Impatient()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            assert await command.wait(timeout=0.05) is None
+        # Paced, the plugin is asked once or twice in the time, not hundreds of times.
+        assert fake.plugin_paths().count("/commands/c1/wait_timeout") <= 2
+
+    async def test_the_pacing_still_notices_an_end_within_a_poll_pause(self) -> None:
+        fake = Impatient()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            asyncio.get_running_loop().call_later(0.02, fake.commands["c1"].finish, 0)
+            # Paced to a poll's longest pause at most, not to the whole slice.
+            assert await asyncio.wait_for(command.wait(), 2) == 0
+
+    async def test_a_wait_slice_is_given_longer_than_the_clients_read_timeout(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=1)
+        async with UnikraftCloud(
+            token="tok", metro="fra", transport=fake.transport, timeout=5.0
+        ) as ukc:
+            await sandbox(ukc).exec("x")
+        reads = {
+            call.url.path.rsplit("/", 1)[-1]: call.extensions["timeout"]["read"]
+            for call in fake.recorder.calls
+            if call.url.path.startswith(fake.prefix)
+        }
+        # The plugin holds a wait for the whole slice; every other request keeps
+        # the client's own timeout.
+        assert reads["wait_timeout"] == sandbox_module.WAIT_SLICE + sandbox_module._WAIT_MARGIN
+        assert reads["logs"] == 5.0
+
+    async def test_a_backoff_after_a_failed_wait_stops_at_the_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slept: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        monkeypatch.setattr(sandbox_module, "POLL_INTERVAL", 10.0)
+        fake = FakeSandbox()
+        fake.failing_waits = 1
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            assert await command.wait(timeout=0.05) is None
+        assert slept and all(pause <= 0.05 for pause in slept)
+
+    async def test_a_wait_that_fails_once_or_twice_is_retried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = FakeSandbox()
+        fake.failing_waits = 2
+        fake.on_run(stdout=b"out", exits_after_polls=2)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x", forget=True)
+        assert (result.exit_code, result.stdout) == (0, b"out")
+        assert fake.plugin_paths().count("/commands/c1/wait_timeout") >= 3
+        assert "c1" not in fake.commands
+
+    async def test_a_wait_that_keeps_failing_gives_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = FakeSandbox()
+        fake.failing_waits = NEVER
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            with pytest.raises(UnikraftCloudError) as caught:
+                await sandbox(ukc).exec("x")
+        assert caught.value.status == 502
+        assert fake.plugin_paths().count("/commands/c1/wait_timeout") == 3
+
+    async def test_a_failed_poll_after_the_end_is_retried_too(self) -> None:
+        fake = FakeSandbox()
+        fake.failing_polls = 2
+        fake.on_run(stdout=b"out", exits_after_polls=0)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x")
+        assert result.stdout == b"out"
+
+    async def test_too_many_failed_polls_after_the_end_give_up(self) -> None:
+        fake = FakeSandbox()
+        fake.failing_polls = 3
+        fake.on_run(stdout=b"out", exits_after_polls=0)
+        async with cloud(fake) as ukc:
+            with pytest.raises(UnikraftCloudError) as caught:
+                await sandbox(ukc).exec("x")
+        assert caught.value.status == 500
+
+    async def test_a_stream_left_early_leaves_no_stray_failure_behind(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_sleep", fake_sleep)
+        fake = FakeSandbox()
+        fake.failing_waits = NEVER
+        fake.on_run(stdout=b"hello", exits_after_polls=NEVER)
+        loop = asyncio.get_running_loop()
+        stray: list[str | None] = []
+        loop.set_exception_handler(lambda loop, context: stray.append(context.get("message")))
+        try:
+            async with cloud(fake) as ukc:
+                command = await sandbox(ukc).run("x")
+                stream = command.stream()
+                async for chunk in stream:
+                    assert chunk.data == b"hello"
+                    break
+                # The wait behind the stream has failed by now; leaving the
+                # stream must still account for it.
+                await asyncio.sleep(0.02)
+                await stream.aclose()
+            del stream, command
+            gc.collect()
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(None)
+        assert stray == []
+
+
+class ExitedBeforeSignal(FakeSandbox):
+    """A plugin whose command exits just as it is signalled, so the signal is refused."""
+
+    async def _command(
+        self, request: httpx.Request, command: FakeCommand, op: str, body: dict[str, Any]
+    ) -> httpx.Response:
+        if op == "signal":
+            command.finish(3)
+            return httpx.Response(409, json={"status": "error", "message": "process has exited"})
+        return await super()._command(request, command, op, body)
+
+
+class TestTimeoutsThatCannotInterrupt:
+    async def test_a_lost_interrupt_raises_rather_than_waiting_for_nothing(self) -> None:
+        fake = FakeSandbox()
+        fake.failing_signals = 1
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            with pytest.raises(ExecTimeoutError) as caught:
+                await sandbox(ukc).exec("x", timeout=0.01)
+            assert isinstance(caught.value, UnikraftCloudError)
+            assert caught.value.command.uuid == "c1"
+            # Why the interrupt was lost travels along.
+            assert isinstance(caught.value.__cause__, UnikraftCloudError)
+            assert caught.value.__cause__.status == 500
+        assert fake.commands["c1"].running
+
+    async def test_a_command_that_exited_as_it_was_interrupted_reports_its_end(self) -> None:
+        fake = ExitedBeforeSignal()
+        fake.on_run(stdout=b"all of it", exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            result = await sandbox(ukc).exec("x", timeout=0.01)
+        assert (result.exit_code, result.interrupted, result.stdout) == (3, True, b"all of it")
+
+    async def test_a_negative_timeout_or_grace_is_refused(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(ValueError, match="timeout"):
+                await sandbox(ukc).exec("x", timeout=-1)
+            with pytest.raises(ValueError, match="wait_delay"):
+                await sandbox(ukc).exec("x", timeout=1, wait_delay=-1)
+        assert fake.commands == {}
+
+    async def test_a_grace_period_needs_a_timeout(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(TypeError, match="timeout"):
+                await sandbox(ukc).exec("x", wait_delay=1)
+        assert fake.commands == {}
+
+    async def test_a_cancelled_exec_leaves_the_command_running_unsignalled(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            running = asyncio.ensure_future(sandbox(ukc).exec("x"))
+            await asyncio.sleep(0.01)
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+        assert fake.commands["c1"].running
+        assert fake.commands["c1"].signals == []
+
+
+class TestCommandShapes:
+    async def test_an_argument_vector_runs_without_a_shell(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).run(["echo", "hi there"])
+            await sandbox(ukc).exec(("printf", "%s", "a b"), cwd="/app")
+        assert body_of(fake, 0) == {"cmd": ["echo", "hi there"]}
+        assert body_of(fake, 1) == {"cmd": ["printf", "%s", "a b"], "cwd": "/app"}
+
+    async def test_deleting_a_running_command_says_it_still_runs(self) -> None:
+        fake = FakeSandbox()
+        fake.on_run(exits_after_polls=NEVER)
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            with pytest.raises(UnikraftCloudError, match="still running") as caught:
+                await command.delete()
+        assert caught.value.status == 409
+        assert not isinstance(caught.value, AlreadyExistsError)
+        assert isinstance(caught.value.__cause__, UnikraftCloudError)
+
+    async def test_the_sandbox_errors_are_the_sdks_and_timeouts_both(self) -> None:
+        assert issubclass(PluginNotReadyError, UnikraftCloudError)
+        assert issubclass(PluginNotReadyError, TimeoutError)
+        assert issubclass(ExecTimeoutError, UnikraftCloudError)
+        assert issubclass(ExecTimeoutError, TimeoutError)
+
+    async def test_a_negative_wait_is_refused_before_it_is_sent(self) -> None:
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            command = await sandbox(ukc).run("x")
+            with pytest.raises(ValueError, match="zero or more"):
+                await command.wait(timeout=-1)
+        assert "/commands/c1/wait_timeout" not in fake.plugin_paths()
+
+
+class TestFileEdges:
+    async def test_a_failed_download_leaves_the_local_file_as_it_was(self, tmp_path: Path) -> None:
+        local = tmp_path / "out.bin"
+        local.write_bytes(b"before")
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(NotFoundError):
+                await sandbox(ukc).fs.read_to("/nope", local)
+        assert local.read_bytes() == b"before"
+        assert sorted(tmp_path.iterdir()) == [local]
+
+    async def test_a_download_lands_whole_under_its_own_name(self, tmp_path: Path) -> None:
+        fake = FakeSandbox()
+        fake.files["/f"] = b"payload"
+        async with cloud(fake) as ukc:
+            size = await sandbox(ukc).fs.read_to("/f", tmp_path / "f.bin")
+        assert size == 7
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["f.bin"]
+
+    async def test_the_file_stream_takes_the_route_the_generated_read_takes(self) -> None:
+        fake = FakeSandbox()
+        fake.files["/f"] = b"data"
+        async with cloud(fake) as ukc:
+            sb = sandbox(ukc)
+            assert await sb.fs.read("/f") == b"data"
+            assert b"".join([chunk async for chunk in sb.fs.stream("/f")]) == b"data"
+        reads = [(c.method, c.url.path) for c in fake.recorder.calls if "/fs/" in c.url.path]
+        assert len(reads) == 2 and reads[0] == reads[1]
+
+    async def test_an_upload_of_a_whole_number_of_pieces_sends_no_extra_piece(
+        self, tmp_path: Path
+    ) -> None:
+        local = tmp_path / "even.bin"
+        local.write_bytes(b"abcdefgh")
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            await sandbox(ukc).fs.upload_file(local, "/even", chunk_size=4)
+            await sandbox(ukc).fs.write("/empty", b"")
+        writes = [
+            json.loads(c.content) for c in fake.recorder.calls if c.url.path.endswith("/fs/write")
+        ]
+        assert [(w["path"], w["append"]) for w in writes] == [
+            ("/even", False),
+            ("/even", True),
+            ("/empty", False),
+        ]
+        assert (fake.files["/even"], fake.files["/empty"]) == (b"abcdefgh", b"")
+
+    async def test_a_chunk_size_below_one_is_refused(self, tmp_path: Path) -> None:
+        local = tmp_path / "x"
+        local.write_bytes(b"x")
+        fake = FakeSandbox()
+        async with cloud(fake) as ukc:
+            with pytest.raises(ValueError, match="one or more"):
+                await sandbox(ukc).fs.write("/x", b"data", chunk_size=0)
+            with pytest.raises(ValueError, match="one or more"):
+                await sandbox(ukc).fs.upload_file(local, "/x", chunk_size=-1)
+            with pytest.raises(ValueError, match="one or more"):
+                await sandbox(ukc).fs.read_to("/x", local, chunk_size=0)
+            with pytest.raises(ValueError, match="one or more"):
+                async for _ in sandbox(ukc).fs.stream("/x", chunk_size=-1):
+                    pass
+        assert fake.plugin_paths() == []
+
+    async def test_text_that_escapes_past_a_request_goes_as_base64_pieces(self) -> None:
+        fake = FakeSandbox()
+        text = "é" * 600
+        async with cloud(fake) as ukc:
+            # 1200 bytes of UTF-8, but 3600 once JSON escapes each `é` as `\u00e9`.
+            await sandbox(ukc).fs.write("/t", text, chunk_size=1000)
+            await sandbox(ukc).fs.upload("/d/", "t", text, chunk_size=1000)
+            # ASCII text that fits travels as it is, in one request.
+            await sandbox(ukc).fs.write("/a", "plain", chunk_size=1000)
+        writes = [
+            json.loads(c.content) for c in fake.recorder.calls if c.url.path.endswith("/fs/write")
+        ]
+        assert [(w["path"], w["encoding"], w["append"]) for w in writes] == [
+            ("/t", "base64", False),
+            ("/t", "base64", True),
+            ("/d/t", "base64", False),
+            ("/d/t", "base64", True),
+            ("/a", "utf-8", False),
+        ]
+        assert fake.files["/t"] == fake.files["/d/t"] == text.encode()
+        assert fake.files["/a"] == b"plain"
