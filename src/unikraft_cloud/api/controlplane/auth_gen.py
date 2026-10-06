@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
-from typing import Any
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
 from . import models_gen as models
@@ -25,7 +24,7 @@ class AuthApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> AsyncIterator[models.CheckAuthorizationResponse]:
         """Check Authorization of Sign-In Request"""
-        return self._stream(
+        return self.stream(
             models.CheckAuthorizationResponse,
             method="POST",
             path="/v1/auth/check",
@@ -43,7 +42,7 @@ class AuthApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.GetAuthorizationResponse:
         """Get Authorization Status"""
-        return await self._request(
+        return await self.request(
             models.GetAuthorizationResponse,
             method="GET",
             path="/v1/auth",
@@ -61,7 +60,7 @@ class AuthApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.RequestSigninResponse:
         """Request Sign-In"""
-        return await self._request(
+        return await self.request(
             models.RequestSigninResponse,
             method="POST",
             path="/v1/auth/signin",

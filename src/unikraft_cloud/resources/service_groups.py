@@ -12,7 +12,7 @@ from typing import Any, TypeVar, get_args
 from pydantic import BaseModel
 
 from ..api.platform import models
-from ..api.platform.service_groups_gen import ServiceGroupsApi
+from ..api.platform.services_gen import ServicesApi
 from ..core.fanout import fanout
 from ..core.handle import HandleSteps, Located, MetroTarget, ResourceHandle
 from ..core.handle_set import HandleSet
@@ -207,14 +207,14 @@ class ServiceGroupSet(HandleSet["ServiceGroupHandle[ServiceGroup]", ServiceGroup
         )
 
 
-class ServiceGroups(Resource[ServiceGroupsApi]):
+class ServiceGroups(Resource[ServicesApi]):
     """Idiomatic client for Unikraft Cloud service groups."""
 
     noun = _NOUN
     key = _KEY
 
     def __init__(self, session: Session, scope: MetroScope) -> None:
-        super().__init__(session, scope, ServiceGroupsApi(session.platform))
+        super().__init__(session, scope, ServicesApi(session.platform))
 
     def create(
         self,
@@ -275,6 +275,7 @@ class ServiceGroups(Resource[ServiceGroupsApi]):
                 fetch=lambda target: self.read(target, opts),
                 what=f"service group {describe_ref(ref)}",
                 options=call,
+                lookup=True,
             ),
         )
 

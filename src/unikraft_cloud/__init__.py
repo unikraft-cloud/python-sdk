@@ -4,13 +4,13 @@
 """Official Python SDK for the Unikraft Cloud Platform API.
 
 The idiomatic client is :class:`UnikraftCloud`. The raw, spec-shaped API stays
-available on ``ukc.api`` and from ``unikraft_cloud.api.platform`` and
-``unikraft_cloud.api.controlplane``.
+available on ``ukc.api`` and from ``unikraft_cloud.api.platform``,
+``unikraft_cloud.api.controlplane`` and ``unikraft_cloud.api.plugins``.
 """
 
 from __future__ import annotations
 
-from .api import Api, ControlPlaneApi, PlatformApi
+from .api import Api, ControlPlaneApi, PlatformApi, PluginsApi, SandboxApi
 from .client import USER_AGENT, MetroClient, Scope, UnikraftCloud
 from .core.errors import (
     AlreadyExistsError,
@@ -39,6 +39,7 @@ from .core.http import (
     ApiClient,
     ApiClientConfig,
     CallOptions,
+    RawResponse,
     TimeoutOption,
     Unset,
 )
@@ -58,6 +59,18 @@ from .core.patch import REMOVE, PatchItem, PatchOp, Remove, ResourceEditor
 from .core.resource import MetroGroup, Resource, ScopeOptions
 from .core.response import Ref, RefLike, or_absent
 from .core.session import Session, SessionConfig
+from .plugins import Plugin, PluginRoute
+from .plugins.sandbox import (
+    Command,
+    CommandLogs,
+    ExecResult,
+    ExecTimeoutError,
+    OutputChunk,
+    OutputSink,
+    PluginNotReadyError,
+    Sandbox,
+    SandboxFiles,
+)
 from .resources.certificates import (
     Certificate,
     CertificateHandle,
@@ -65,6 +78,7 @@ from .resources.certificates import (
     CertificateSet,
     DeletedCertificate,
 )
+from .resources.images import Image, Images, RegistryImage
 from .resources.instances import (
     DeletedInstance,
     Instance,
@@ -75,6 +89,7 @@ from .resources.instances import (
     InstanceMetrics,
     Instances,
     InstanceSet,
+    InstanceStoppedError,
     StartedInstance,
     StoppedInstance,
     SuspendedInstance,
@@ -90,6 +105,14 @@ from .resources.service_groups import (
     ServiceGroupSet,
     UpdatedServiceGroup,
 )
+from .resources.stop import KernelStopCode, KernelStopReason, PlatformStopCode, Stop, StopReason
+from .resources.templates import (
+    DeletedTemplate,
+    Template,
+    TemplateHandle,
+    Templates,
+    TemplateSet,
+)
 from .resources.users import Quotas, Users
 from .resources.volumes import (
     AttachedVolume,
@@ -103,7 +126,7 @@ from .resources.volumes import (
     VolumeSet,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "CONTROLPLANE_BASE_URL",
@@ -124,15 +147,22 @@ __all__ = [
     "CertificateHandle",
     "CertificateSet",
     "Certificates",
+    "Command",
+    "CommandLogs",
     "ControlPlaneApi",
     "DeletedCertificate",
     "DeletedInstance",
     "DeletedServiceGroup",
+    "DeletedTemplate",
     "DeletedVolume",
     "DetachedVolume",
     "ErrorKind",
+    "ExecResult",
+    "ExecTimeoutError",
     "HandleSet",
     "HandleSteps",
+    "Image",
+    "Images",
     "Instance",
     "InstanceEditor",
     "InstanceHandle",
@@ -140,7 +170,10 @@ __all__ = [
     "InstanceLogs",
     "InstanceMetrics",
     "InstanceSet",
+    "InstanceStoppedError",
     "Instances",
+    "KernelStopCode",
+    "KernelStopReason",
     "Listing",
     "Located",
     "Metro",
@@ -155,18 +188,30 @@ __all__ = [
     "MetroScope",
     "MetroTarget",
     "NotFoundError",
+    "OutputChunk",
+    "OutputSink",
     "PatchItem",
     "PatchOp",
     "PlatformApi",
+    "PlatformStopCode",
+    "Plugin",
+    "PluginNotReadyError",
+    "PluginRoute",
+    "PluginsApi",
     "Quotas",
     "RateLimitError",
+    "RawResponse",
     "Ref",
     "RefLike",
+    "RegistryImage",
     "Remove",
     "Resource",
     "ResourceEditor",
     "ResourceHandle",
     "ResponseError",
+    "Sandbox",
+    "SandboxApi",
+    "SandboxFiles",
     "Scope",
     "ScopeOptions",
     "ServerError",
@@ -178,8 +223,14 @@ __all__ = [
     "Session",
     "SessionConfig",
     "StartedInstance",
+    "Stop",
+    "StopReason",
     "StoppedInstance",
     "SuspendedInstance",
+    "Template",
+    "TemplateHandle",
+    "TemplateSet",
+    "Templates",
     "TimeoutOption",
     "UnikraftCloud",
     "UnikraftCloudError",

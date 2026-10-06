@@ -1,12 +1,127 @@
 {{- /* Models for one API surface: enum aliases, the pydantic models, then the
-  union aliases.
+  other aliases.
 
   Python evaluates a module top to bottom, where TypeScript's declarations are
   order-free, so this is laid out to survive the parser's alphabetical order:
   self-contained enum aliases first, then the models with deferred annotations,
-  then the aliases for schemas that are only a union of models -- an assignment
-  is evaluated on the spot, unlike an annotation, so its branches must already
+  then the aliases for the schemas that are no model -- an assignment is
+  evaluated on the spot, unlike an annotation, so what it names must already
   exist -- and a rebuild pass once every name does. */ -}}
+{{- /* A schema name is rendered as it is, in its declaration and in every
+  reference, so it must be an identifier that nothing in the module takes: an
+  import, a type the annotations name, or the loop variable of the rebuild. */ -}}
+{{- $moduleNames := list "Any" "BaseModel" "ConfigDict" "Field" "Literal" "annotations" "bool" "datetime" "dict" "float" "int" "list" "str" }}
+{{- $schemaNames := list }}
+{{- range $m := .Models }}{{ $schemaNames = append $schemaNames $m.SchemaName }}{{ end }}
+{{- range $m := .Models }}
+{{- $name := $m.SchemaName }}
+{{- if or (not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $name)) (ne (pySafeName $name) $name) }}
+{{- fail (printf "schema %q cannot name a Python class; rename it in the specification" $name) }}
+{{- end }}
+{{- if or (has $name $moduleNames) (eq $name "_model") }}
+{{- fail (printf "schema %q has a name that the models module takes; rename it in the specification" $name) }}
+{{- end }}
+{{- end }}
+{{- /* A request model has `Request` and not `Response` in its name, after the
+  TypeSpec convention `<Verb><Resource>Request*`, or only requests reach it:
+  see the README, "Development". */ -}}
+{{- $named := list }}
+{{- range $m := .Models }}
+{{- if and (contains "Request" $m.SchemaName) (not (contains "Response" $m.SchemaName)) }}{{ $named = append $named $m.SchemaName }}{{ end }}
+{{- end }}
+{{- /* The types each model renders, by name, and all of them together. */ -}}
+{{- $modelTypes := dict }}
+{{- $allTypes := "" }}
+{{- /* A field name is derived here, once, and looked up where the field is
+  rendered, so the imports the fields need are known before them. */ -}}
+{{- $fieldNames := dict }}
+{{- $needField := false }}
+{{- $needDatetime := false }}
+{{- $needLiteral := false }}
+{{- range $m := .Models }}
+{{- $name := $m.SchemaName }}
+{{- if $m.Schema.Enum }}{{ $needLiteral = true }}{{ end }}
+{{- /* Only an alias renders its own type; a class renders its fields. */ -}}
+{{- $schema := $m.Schema }}
+{{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
+{{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
+{{- $map := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) (or (not $schema.Type) ($schema.Type.Is "object")) (or $schema.AdditionalProperties.Schema (eq (toJson $schema.AdditionalProperties.Has) "true")) }}
+{{- $types := "" }}
+{{- if and (not $schema.Enum) (or $union $scalar $map) }}{{ $types = schemaToPyType $schema }}{{ end }}
+{{- range $prop := propertyNamesOrdered $name $m.Schema }}
+{{- $p := getProperty $m.Schema $prop }}
+{{- $types = printf "%s %s" $types (schemaToPyType $p) }}
+{{- if eq $p.Format "date-time" }}{{ $needDatetime = true }}{{ end }}
+{{- /* A field is an attribute, and one with a leading underscore is private to
+  pydantic, so a name that is no public identifier is spelled in snake case
+  and kept as the alias; one that still is none is refused. */ -}}
+{{- $safe := pySafeName $prop }}
+{{- if not (regexMatch "^[A-Za-z][A-Za-z0-9_]*$" $safe) }}{{ $safe = pySafeName (snakecase $prop) }}{{ end }}
+{{- if not (regexMatch "^[A-Za-z][A-Za-z0-9_]*$" $safe) }}
+{{- fail (printf "property %q of %s cannot name a Python field, even in snake case; rename it in the specification" $prop $name) }}
+{{- end }}
+{{- /* pydantic keeps `model_` for its own members, and its version 1 methods
+  shadow a field: such a name gets a `field_` prefix or a trailing `_`. */ -}}
+{{- if hasPrefix "model_" $safe }}{{ $safe = printf "field_%s" $safe }}{{ end }}
+{{- if has $safe (list "construct" "copy" "dict" "from_orm" "json" "parse_file" "parse_obj" "parse_raw" "schema" "schema_json" "update_forward_refs" "validate") }}{{ $safe = printf "%s_" $safe }}{{ end }}
+{{- /* A field with a default is an attribute of the class body, where the
+  annotations and defaults of later fields are resolved, so it may not take a
+  name that they use. */ -}}
+{{- if or (has $safe (list "Any" "Field" "Literal" "bool" "datetime" "dict" "float" "int" "list" "str")) (has $safe $schemaNames) }}{{ $safe = printf "%s_" $safe }}{{ end }}
+{{- if ne $safe $prop }}{{ $needField = true }}{{ end }}
+{{- $_ := set $fieldNames (printf "%s.%s" $name $prop) $safe }}
+{{- end }}
+{{- $_ := set $modelTypes $name $types }}
+{{- $allTypes = printf "%s %s" $allTypes $types }}
+{{- end }}
+{{- $needAny := regexMatch "\\bAny\\b" $allTypes }}
+{{- if regexMatch "\\bLiteral\\b" $allTypes }}{{ $needLiteral = true }}{{ end }}
+{{- /* What a request body names is the caller's, and what a response names is
+  the server's. Each side is followed through the models it names, so a schema
+  reached from requests alone, however deep, is a request model, and one a
+  response reaches anywhere is not. The named request models seed the request
+  side, and stay request models wherever else they are reached. */ -}}
+{{- $requestSeed := "" }}
+{{- $responseSeed := "" }}
+{{- range $op := .Operations }}
+{{- with requestJSONSchema $op.Operation }}{{ $requestSeed = printf "%s %s" $requestSeed (pyTypeRef .) }}{{ end }}
+{{- range $entry := sortedResponseCodes $op.Operation.Responses }}{{ with $entry.Ref }}{{ with .Value }}
+{{- range $media, $content := .Content }}{{ with $content.Schema }}{{ $responseSeed = printf "%s %s" $responseSeed (pyTypeRef .) }}{{ end }}{{ end }}
+{{- end }}{{ end }}{{ end }}
+{{- end }}
+{{- $requestSide := dict }}
+{{- $responseSide := dict }}
+{{- range $m := .Models }}
+{{- $name := $m.SchemaName }}
+{{- if or (has $name $named) (regexMatch (printf "\\b%s\\b" $name) $requestSeed) }}{{ $_ := set $requestSide $name true }}{{ end }}
+{{- if regexMatch (printf "\\b%s\\b" $name) $responseSeed }}{{ $_ := set $responseSide $name true }}{{ end }}
+{{- end }}
+{{- /* Each model reached is followed once; a pass per model is as many as the
+  longest chain of references can need. */ -}}
+{{- $followedRequest := dict }}
+{{- $followedResponse := dict }}
+{{- range $pass := .Models }}
+{{- range $m := $.Models }}
+{{- $name := $m.SchemaName }}
+{{- if and (hasKey $requestSide $name) (not (hasKey $followedRequest $name)) }}
+{{- $_ := set $followedRequest $name true }}
+{{- $types := get $modelTypes $name }}
+{{- range $other := $.Models }}{{ if regexMatch (printf "\\b%s\\b" $other.SchemaName) $types }}{{ $_ := set $requestSide $other.SchemaName true }}{{ end }}{{ end }}
+{{- end }}
+{{- if and (hasKey $responseSide $name) (not (hasKey $followedResponse $name)) }}
+{{- $_ := set $followedResponse $name true }}
+{{- $types := get $modelTypes $name }}
+{{- range $other := $.Models }}{{ if regexMatch (printf "\\b%s\\b" $other.SchemaName) $types }}{{ $_ := set $responseSide $other.SchemaName true }}{{ end }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $requests := $named }}
+{{- range $m := .Models }}
+{{- $name := $m.SchemaName }}
+{{- if and (not (has $name $named)) (hasKey $requestSide $name) (not (hasKey $responseSide $name)) }}
+{{- $requests = append $requests $name }}
+{{- end }}
+{{- end }}
 --- models_gen.py
 # Code generated by openapi-gen; DO NOT EDIT.
 #
@@ -14,11 +129,16 @@
 # specification. These mirror the wire format exactly.
 
 from __future__ import annotations
-
+{{- if or $needDatetime $needAny $needLiteral }}
+{{ end }}
+{{- if $needDatetime }}
 from datetime import datetime
-from typing import Any, Literal
+{{- end }}
+{{- if or $needAny $needLiteral }}
+from typing import {{ if $needAny }}Any{{ end }}{{ if and $needAny $needLiteral }}, {{ end }}{{ if $needLiteral }}Literal{{ end }}
+{{- end }}
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict{{ if $needField }}, Field{{ end }}
 
 # Enumerations, as Literal aliases rather than enum classes: the values stay
 # plain strings, so `state == "running"` needs no import, and a value the server
@@ -27,7 +147,7 @@ from pydantic import BaseModel, ConfigDict, Field
 {{- $schema := $m.Schema }}
 {{- if $schema.Enum }}
 
-{{ $m.SchemaName }} = {{ enumPyLiteral $schema }}
+{{ $m.SchemaName }} = {{ enumPyLiteral $schema }}{{ if $schema.Nullable }} | None{{ end }}
 {{- with $schema.Description }}
 {{ pyDoc . "" }}
 {{- end }}
@@ -37,7 +157,24 @@ from pydantic import BaseModel, ConfigDict, Field
 {{ range $m := .Models }}
 {{- $schema := $m.Schema }}
 {{- $name := $m.SchemaName }}
-{{- if and (not $schema.Enum) (not (and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties))) }}
+{{- /* A request body is the caller's to fill in, so a field the specification
+  requires is required here too. A response is the server's, and one shape
+  serves several answers, so there every field stays optional. Which is which
+  is told by name and by use, as the pass above has it: a schema named
+  otherwise that requests alone reach is a request too, and one a response
+  reaches stays optional. */ -}}
+{{- $request := has $name $requests }}
+{{- /* A union alias renders one union keyword and nothing else, so a schema
+  that adds allOf or the other union keyword to it is not what it renders. */ -}}
+{{- if and (or $schema.OneOf $schema.AnyOf) (or $schema.AllOf (and $schema.OneOf $schema.AnyOf)) }}
+{{- fail (printf "schema %s combines oneOf or anyOf with allOf or with each other, which the templates cannot render; split it in the specification" $name) }}
+{{- end }}
+{{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
+{{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
+{{- /* A map is an object with no properties of its own and a schema, or a
+  `true`, for the additional ones. Has is a *bool, read through toJson. */ -}}
+{{- $map := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) (or (not $schema.Type) ($schema.Type.Is "object")) (or $schema.AdditionalProperties.Schema (eq (toJson $schema.AdditionalProperties.Has) "true")) }}
+{{- if and (not $schema.Enum) (not $union) (not $scalar) (not $map) }}
 
 
 class {{ $name }}(BaseModel):
@@ -46,20 +183,39 @@ class {{ $name }}(BaseModel):
 {{ end }}
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
+{{- if $request }}
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+{{- else }}
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
+{{- end }}
     model_config = ConfigDict(extra="allow", populate_by_name=True)
+{{- $fields := list }}
 {{ range $prop := propertyNamesOrdered $name $schema }}
 {{- $p := getProperty $schema $prop }}
-{{- $safe := pySafeName $prop }}
+{{- $safe := get $fieldNames (printf "%s.%s" $name $prop) }}
+{{- if has $safe $fields }}
+{{- fail (printf "property %q of %s renders the field %s, which another property renders too; rename one of them in the specification" $prop $name $safe) }}
+{{- end }}
+{{- $fields = append $fields $safe }}
 {{- /* A date-time is an ISO-8601 string on the wire; pydantic parses it into a
   `datetime` and writes it back out in the same form. */ -}}
 {{- $type := schemaToPyType $p }}
-{{- if eq $p.Format "date-time" }}{{ $type = "datetime" }}{{ end }}
+{{- if eq $p.Format "date-time" }}{{ $type = "datetime" }}{{ if $p.Nullable }}{{ $type = "datetime | None" }}{{ end }}{{ end }}
+{{- /* A nullable type already ends in `| None`; an optional field adds it once. */ -}}
+{{- $optional := $type }}
+{{- if not (hasSuffix "| None" $type) }}{{ $optional = printf "%s | None" $type }}{{ end }}
+{{- if and $request (getPropertyRequired $schema $prop) }}
 {{- if eq $safe $prop }}
-    {{ $safe }}: {{ $type }} | None = None
+    {{ $safe }}: {{ $type }}
 {{- else }}
-    {{ $safe }}: {{ $type }} | None = Field(default=None, alias="{{ $prop }}")
+    {{ $safe }}: {{ $type }} = Field(alias={{ printf "%q" $prop }})
+{{- end }}
+{{- else if eq $safe $prop }}
+    {{ $safe }}: {{ $optional }} = None
+{{- else }}
+    {{ $safe }}: {{ $optional }} = Field(default=None, alias={{ printf "%q" $prop }})
 {{- end }}
 {{- with $p.Description }}
     {{ pyDoc . "    " }}
@@ -67,17 +223,47 @@ class {{ $name }}(BaseModel):
 {{- end }}
 {{- end }}
 {{- end }}
-{{- /* A schema that is only a union of branches is an alias, not a model. It
-  comes after the models because `X = A | B` evaluates A and B right here, where
-  a field annotation would wait for the rebuild below. */ -}}
+{{- /* A schema that is only a union of branches, or a plain scalar, array or map,
+  is an alias, not a model: `Line = Shell | Args`, `Args = list[str]`,
+  `Env = dict[str, str]`. It comes after the models because the assignment
+  evaluates the names it uses right here, where a field annotation would wait
+  for the rebuild below. An alias that names another alias comes after it, so
+  the aliases go out in passes, each taking those whose aliases are all out;
+  one left at the end names itself. */ -}}
+{{- $aliases := list }}
 {{- range $m := .Models }}
 {{- $schema := $m.Schema }}
-{{- if and (not $schema.Enum) (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
+{{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
+{{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
+{{- /* A map is an object with no properties of its own and a schema, or a
+  `true`, for the additional ones. Has is a *bool, read through toJson. */ -}}
+{{- $map := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) (or (not $schema.Type) ($schema.Type.Is "object")) (or $schema.AdditionalProperties.Schema (eq (toJson $schema.AdditionalProperties.Has) "true")) }}
+{{- if and (not $schema.Enum) (or $union $scalar $map) }}{{ $aliases = append $aliases $m.SchemaName }}{{ end }}
+{{- end }}
+{{- $emitted := list }}
+{{- range $pass := $aliases }}
+{{- range $m := $.Models }}
+{{- $name := $m.SchemaName }}
+{{- if and (has $name $aliases) (not (has $name $emitted)) }}
+{{- $code := schemaToPyType $m.Schema }}
+{{- $ready := true }}
+{{- range $other := $aliases }}
+{{- if and (not (has $other $emitted)) (regexMatch (printf "\\b%s\\b" $other) $code) }}{{ $ready = false }}{{ end }}
+{{- end }}
+{{- if $ready }}
 
-{{ $m.SchemaName }} = {{ schemaToPyType $schema }}
-{{- with $schema.Description }}
+{{ $name }} = {{ $code }}
+{{- with $m.Schema.Description }}
 {{ pyDoc . "" }}
 {{- end }}
+{{- $emitted = append $emitted $name }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $name := $aliases }}
+{{- if not (has $name $emitted) }}
+{{- fail (printf "schema %s is an alias that names itself, directly or through another alias, so it cannot be rendered" $name) }}
 {{- end }}
 {{- end }}
 
@@ -88,7 +274,12 @@ class {{ $name }}(BaseModel):
 for _model in (
 {{- range $m := .Models }}
 {{- $schema := $m.Schema }}
-{{- if and (not $schema.Enum) (not (and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties))) }}
+{{- $union := and (or $schema.OneOf $schema.AnyOf) (not $schema.Properties) }}
+{{- $scalar := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) $schema.Type (not ($schema.Type.Is "object")) }}
+{{- /* A map is an object with no properties of its own and a schema, or a
+  `true`, for the additional ones. Has is a *bool, read through toJson. */ -}}
+{{- $map := and (not $schema.Properties) (not $schema.OneOf) (not $schema.AnyOf) (not $schema.AllOf) (or (not $schema.Type) ($schema.Type.Is "object")) (or $schema.AdditionalProperties.Schema (eq (toJson $schema.AdditionalProperties.Has) "true")) }}
+{{- if and (not $schema.Enum) (not $union) (not $scalar) (not $map) }}
     {{ $m.SchemaName }},
 {{- end }}
 {{- end }}

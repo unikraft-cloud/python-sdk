@@ -224,6 +224,7 @@ class Certificates(Resource[CertificatesApi]):
                 fetch=lambda target: self.read(target, opts),
                 what=f"certificate {describe_ref(ref)}",
                 options=call,
+                lookup=True,
             ),
         )
 

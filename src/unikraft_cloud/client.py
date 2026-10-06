@@ -23,8 +23,10 @@ from .core.metro import (
 )
 from .core.session import Session, SessionConfig
 from .resources.certificates import Certificates
+from .resources.images import Images
 from .resources.instances import Instances
 from .resources.service_groups import ServiceGroups
+from .resources.templates import Templates
 from .resources.users import Users
 from .resources.volumes import Volumes
 
@@ -46,6 +48,10 @@ class Scope:
         self.scope = scope
         #: Instances (microVMs).
         self.instances = Instances(session, scope)
+        #: Instance templates, which new instances are cloned from.
+        self.templates = Templates(session, scope, self.instances)
+        #: Images: what each metro's nodes cache, and what the registry holds.
+        self.images = Images(session, scope)
         #: Persistent volumes.
         self.volumes = Volumes(session, scope)
         #: Service groups (load-balanced networking).
@@ -87,7 +93,8 @@ class UnikraftCloud(Scope):
     discovery.
 
     The raw, spec-shaped API stays available on :attr:`api`, and from
-    ``unikraft_cloud.api.platform`` and ``unikraft_cloud.api.controlplane``.
+    ``unikraft_cloud.api.platform``, ``unikraft_cloud.api.controlplane`` and
+    ``unikraft_cloud.api.plugins``.
 
     The client owns a connection pool, so close it when you are done -- either with
     ``async with`` or by awaiting :meth:`aclose`.
@@ -124,10 +131,10 @@ class UnikraftCloud(Scope):
 
         :param token: Bearer token. Falls back to the ``UKC_TOKEN`` environment
             variable.
-        :param metro: Pin to a single metro (``"fra"``), or to a full
-            ``http(s)://`` base URL for a staging or self-hosted deployment (used
-            verbatim). Falls back to ``UKC_METRO``. When omitted, operations cover
-            **every** metro the account can reach.
+        :param metro: The metro operations default to (``"fra"``), or a full
+            ``http(s)://`` base URL for a staging or self-hosted deployment, which
+            pins the client to that endpoint. Falls back to ``UKC_METRO``. When
+            omitted, operations cover **every** metro the account can reach.
         :param metros: The metros operations cover by default: ``"all"``, one
             metro, or a list. Takes precedence over `metro`, which then only
             remains the target for operations that must pick a single metro.
@@ -203,8 +210,8 @@ class UnikraftCloud(Scope):
         super().__init__(session, _default_scope(metros, chosen_metro))
 
         #: The raw ("plumbing") API surfaces: ``api.platform`` (metro-scoped,
-        #: pointing at the default metro unless a call passes ``base_url``) and
-        #: ``api.controlplane``.
+        #: pointing at the default metro unless a call passes ``base_url``),
+        #: ``api.controlplane`` and ``api.plugins``.
         self.api = Api(platform, control_plane)
         self._metro_clients: dict[str, MetroClient] = {}
 

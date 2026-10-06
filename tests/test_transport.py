@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import warnings
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -20,6 +21,7 @@ from unikraft_cloud import (
     AuthenticationError,
     NotFoundError,
     RateLimitError,
+    RawResponse,
     ServerError,
     UnikraftCloudError,
     UnikraftCloudWarning,
@@ -51,16 +53,22 @@ class Client(ApiClient):
     """A stand-in for a generated client, exercising the transport directly."""
 
     async def read(self, **kwargs: Any) -> Env:
-        return await self._request(Env, method="GET", path="/v1/things", **kwargs)
+        return await self.request(Env, method="GET", path="/v1/things", **kwargs)
 
     async def write(self, body: Any) -> Env:
-        return await self._request(Env, method="POST", path="/v1/things", body=body)
+        return await self.request(Env, method="POST", path="/v1/things", body=body)
 
     async def discard(self) -> None:
-        return await self._request_no_content(method="DELETE", path="/v1/things")
+        return await self.request_no_content(method="DELETE", path="/v1/things")
 
     def events(self) -> Any:
-        return self._stream(dict, method="GET", path="/v1/events")
+        return self.stream(dict, method="GET", path="/v1/events")
+
+    async def download(self, **kwargs: Any) -> RawResponse:
+        return await self.request_bytes(method="GET", path="/v1/blob", **kwargs)
+
+    def chunks(self, **kwargs: Any) -> Any:
+        return self.stream_bytes(method="GET", path="/v1/blob", **kwargs)
 
 
 def client(recorder: Recorder, **config: Any) -> Client:
@@ -342,6 +350,102 @@ class TestNoContent:
         assert caught.value.status == 302
 
 
+class TestRawBytes:
+    def _blob(self, status: int = 200, body: bytes = b"hello", **headers: str) -> Recorder:
+        return Recorder(
+            lambda request: httpx.Response(
+                status,
+                content=body,
+                headers={"content-type": "application/octet-stream", **headers},
+            )
+        )
+
+    async def test_returns_the_payload_with_its_status_and_headers(self) -> None:
+        recorder = self._blob()
+        async with client(recorder) as api:
+            blob = await api.download()
+        assert isinstance(blob, RawResponse)
+        assert (blob.content, blob.status) == (b"hello", 200)
+        assert blob.headers["content-type"] == "application/octet-stream"
+        assert blob.content_range is None
+
+    async def test_asks_for_bytes_not_json(self) -> None:
+        recorder = self._blob()
+        async with client(recorder) as api:
+            await api.download()
+        assert recorder.calls[0].headers["accept"] == "application/octet-stream"
+
+    async def test_a_partial_response_carries_its_content_range(self) -> None:
+        recorder = self._blob(206, b"ell", **{"content-range": "bytes 1-3/5"})
+        async with client(recorder) as api:
+            blob = await api.download()
+        assert (blob.status, blob.content, blob.content_range) == (206, b"ell", "bytes 1-3/5")
+
+    async def test_a_failure_raises_the_enveloped_error(self) -> None:
+        recorder = queued(
+            [(404, {"status": "error", "message": "no such file", "errors": [{"status": 404}]})]
+        )
+        async with client(recorder) as api:
+            with pytest.raises(NotFoundError) as caught:
+                await api.download()
+        assert "no such file" in str(caught.value)
+
+    async def test_a_failure_with_an_empty_body_still_reports_its_status(self) -> None:
+        recorder = Recorder(lambda request: httpx.Response(410))
+        async with client(recorder) as api:
+            with pytest.raises(UnikraftCloudError) as caught:
+                await api.download()
+        assert caught.value.status == 410
+
+    async def test_streams_the_payload_in_chunks(self) -> None:
+        recorder = self._blob(body=b"abcdef")
+        async with client(recorder) as api:
+            chunks = [chunk async for chunk in api.chunks(chunk_size=4)]
+        assert chunks == [b"abcd", b"ef"]
+        assert recorder.calls[0].headers["accept"] == "application/octet-stream"
+
+    async def test_a_streamed_failure_raises_before_the_first_chunk(self) -> None:
+        recorder = queued([(403, {"status": "error", "message": "denied"})])
+        async with client(recorder) as api:
+            with pytest.raises(AuthenticationError):
+                [chunk async for chunk in api.chunks()]
+
+    async def test_a_stream_that_breaks_mid_body_is_a_network_error(self) -> None:
+        class Breaks(httpx.AsyncByteStream):
+            async def __aiter__(self) -> AsyncIterator[bytes]:
+                yield b"he"
+                raise httpx.ReadError("connection reset mid-body")
+
+        recorder = Recorder(
+            lambda request: httpx.Response(
+                200, stream=Breaks(), headers={"content-type": "application/octet-stream"}
+            )
+        )
+        async with client(recorder) as api:
+            got: list[bytes] = []
+            with pytest.raises(UnikraftCloudError) as caught:
+                async for chunk in api.chunks():
+                    got.append(chunk)
+        assert got == [b"he"]
+        assert caught.value.kind == "network"
+        assert isinstance(caught.value.__cause__, httpx.ReadError)
+
+    def test_a_content_range_is_parsed_as_well_as_kept(self) -> None:
+        def raw(**headers: str) -> RawResponse:
+            return RawResponse(content=b"", status=206, headers=httpx.Headers(headers))
+
+        part = raw(**{"content-range": "bytes 1-4/5"})
+        assert (part.content_range, part.byte_range, part.total_size) == ("bytes 1-4/5", (1, 4), 5)
+        unsatisfiable = raw(**{"content-range": "bytes */5"})
+        assert (unsatisfiable.byte_range, unsatisfiable.total_size) == (None, 5)
+        unknown_total = raw(**{"content-range": "bytes 0-1/*"})
+        assert (unknown_total.byte_range, unknown_total.total_size) == ((0, 1), None)
+        odd = raw(**{"content-range": "items 1-4/5"})
+        assert (odd.content_range, odd.byte_range, odd.total_size) == ("items 1-4/5", None, None)
+        whole = raw()
+        assert (whole.content_range, whole.byte_range, whole.total_size) == (None, None, None)
+
+
 class TestEventStreams:
     def _stream(self, body: bytes) -> Recorder:
         return Recorder(
@@ -499,6 +603,17 @@ class TestApiSurfaces:
         assert api.platform.instances.http is api.controlplane.metros.http
         await api.aclose()
         assert api.platform.instances.http.is_closed
+
+    async def test_an_instance_scoped_plugin_client_shares_the_pool(self) -> None:
+        recorder = queued([(200, envelope())])
+        config = ApiClientConfig(
+            base_url="https://api.fra.unikraft.cloud", transport=recorder.transport
+        )
+        api = Api(config, config.with_base_url("https://cp.example"))
+        scoped = api.plugins.sandbox.for_instance("u1")
+        assert scoped.client.http is api.platform.instances.http
+        await api.aclose()
+        assert scoped.client.http.is_closed
 
 
 class TestClosedClients:

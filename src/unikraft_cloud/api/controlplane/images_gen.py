@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
 from . import models_gen as models
@@ -26,7 +25,7 @@ class ImagesApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.ListImagesResponse:
         """List Images"""
-        return await self._request(
+        return await self.request(
             models.ListImagesResponse,
             method="GET",
             path="/v1/images",

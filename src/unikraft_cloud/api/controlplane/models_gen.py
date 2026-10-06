@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 # Enumerations, as Literal aliases rather than enum classes: the values stay
 # plain strings, so `state == "running"` needs no import, and a value the server
@@ -138,11 +138,11 @@ class CheckAuthorizationRequest(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    request_id: str | None = None
+    request_id: str
     """
     The request ID is a unique identifier for the request.  This is used to
     track the request in the system and should be provided by the client.
@@ -188,6 +188,10 @@ class CheckAuthorizationResponseData(BaseModel):
     """The display name of the organization the token is associated with."""
     registry: str | None = None
     """The global image registry."""
+    organization_uuid: str | None = None
+    """The UUID of the organization the token is associated with."""
+    user_uuid: str | None = None
+    """The UUID of the user who approved the login."""
 
 
 class CloudProviderConfig(BaseModel):
@@ -275,6 +279,8 @@ class GetAuthorizationResponseData(BaseModel):
     """The display name of the organization the token is associated with."""
     registry: str | None = None
     """The global image registry."""
+    organization_uuid: str | None = None
+    """The UUID of the organization the token is associated with."""
 
 
 class Image(BaseModel):
@@ -523,8 +529,8 @@ class NameOrUUID(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     uuid: str | None = None
@@ -618,11 +624,11 @@ class NodeActivateRequest(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    csr: str | None = None
+    csr: str
     """
     The certificate signing request (CSR) for the license which is base64
     encoded.
@@ -669,13 +675,50 @@ class NodeActivateResponseData(BaseModel):
     """The issued license certificate in base64 URL encoded PEM format."""
 
 
-class ProvisionNodeRequest(BaseModel):
-    """Request message for creating a new node."""
+class NodeDeactivateRequest(BaseModel):
+    """
+    The request message for license deactivation. The caller is identified by
+    an HTTP message signature (RFC 9421) made with the node's stable private
+    key, the same mechanism used by the private node-facing APIs (e.g.
+    NodeHeartbeat) -- not by any field in this message.
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    serial: str
+    """The serial number of the last issued certificate."""
+
+
+class NodeDeactivateResponse(BaseModel):
+    """The response message for license deactivation."""
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
     # Every field is optional: one response shape serves several requests, and a
     # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the response."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class ProvisionNodeRequest(BaseModel):
+    """Request message for creating a new node."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     name: str | None = None
@@ -685,7 +728,7 @@ class ProvisionNodeRequest(BaseModel):
     """
     cloudprovider: CloudProvider | None = None
     """The cloud provider where the machine should be provisioned."""
-    ssh_keys: list[SSHKey] | None = None
+    ssh_keys: list[SSHKey]
     """SSH keys for accessing the node. At least one key is required."""
     tags: dict[str, str] | None = None
     """Optional user-defined tags."""
@@ -756,11 +799,11 @@ class RequestSigninRequest(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    hostname: str | None = None
+    hostname: str
     """
     The hostname is the name of the machine making the request.  This is
     mandatory as it consitutes a unique identifier for the machine.
@@ -874,13 +917,13 @@ class UpdateNodePayload(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    property: MutableNodeProperty | None = None
+    property: MutableNodeProperty
     """The property to update."""
-    operation: MutableNodeOperation | None = None
+    operation: MutableNodeOperation
     """The operation to perform on the property."""
     value: str | None = None
     """
@@ -988,6 +1031,8 @@ for _model in (
     NodeActivateRequest,
     NodeActivateResponse,
     NodeActivateResponseData,
+    NodeDeactivateRequest,
+    NodeDeactivateResponse,
     ProvisionNodeRequest,
     ProvisionNodeResponse,
     ProvisionNodeResponseData,

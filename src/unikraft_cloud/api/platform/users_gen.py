@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from collections.abc import Mapping
 from urllib.parse import quote
 
 from ...core.http import UNSET, ApiClient, TimeoutOption
@@ -11,30 +10,11 @@ from . import models_gen as models
 
 
 class UsersApi(ApiClient):
-    """Low-level "plumbing" client for the `Users` resource.
+    """Low-level "plumbing" client for the `users` resource.
 
     Methods mirror the OpenAPI specification and return the raw response
     envelope. The idiomatic clients are built on top of this.
     """
-
-    async def add_users(
-        self,
-        *,
-        body: models.AddUsersRequest,
-        headers: Mapping[str, str] | None = None,
-        base_url: str | None = None,
-        timeout: TimeoutOption = UNSET,
-    ) -> models.AddUsersResponse:
-        """Add Users"""
-        return await self._request(
-            models.AddUsersResponse,
-            method="POST",
-            path="/v1/users",
-            body=body,
-            headers=headers,
-            base_url=base_url,
-            timeout=timeout,
-        )
 
     async def get_user(
         self,
@@ -44,7 +24,7 @@ class UsersApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.QuotasResponse:
         """Get Current User Quotas"""
-        return await self._request(
+        return await self.request(
             models.QuotasResponse,
             method="GET",
             path="/v1/users/quotas",
@@ -62,7 +42,7 @@ class UsersApi(ApiClient):
         timeout: TimeoutOption = UNSET,
     ) -> models.QuotasResponse:
         """Get User Quotas by UUID"""
-        return await self._request(
+        return await self.request(
             models.QuotasResponse,
             method="GET",
             path=f"/v1/users/{quote(uuid, safe='')}/quotas",

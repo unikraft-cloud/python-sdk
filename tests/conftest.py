@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+import inspect
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from typing import Any
 
 import httpx
@@ -16,6 +17,7 @@ __all__ = [
     "certificate",
     "changed_instance",
     "envelope",
+    "image",
     "instance",
     "instance_logs",
     "metro",
@@ -39,17 +41,28 @@ def _no_ambient_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("UKC_METRO", raising=False)
 
 
-class Recorder:
-    """A transport that records every request it was asked to send."""
+#: A handler answering one request, at once or after awaiting something.
+Handler = Callable[[httpx.Request], "httpx.Response | Awaitable[httpx.Response]"]
 
-    def __init__(self, handler: Callable[[httpx.Request], httpx.Response]) -> None:
+
+class Recorder:
+    """A transport that records every request it was asked to send.
+
+    The handler may be async, so a fake can block the way a real long-poll does.
+    The SDK only ever sends through an async client, which awaits the result.
+    """
+
+    def __init__(self, handler: Handler) -> None:
         self.calls: list[httpx.Request] = []
         self.transport = httpx.MockTransport(self._send)
         self._handler = handler
 
-    def _send(self, request: httpx.Request) -> httpx.Response:
+    async def _send(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
-        return self._handler(request)
+        result = self._handler(request)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     @property
     def urls(self) -> list[str]:
@@ -211,6 +224,18 @@ def quotas(uuid: str = "q1", **overrides: Any) -> dict[str, Any]:
     stats = {name: 0 for name, f in models.QuotasStats.model_fields.items() if f.is_required()}
     limits = {name: 0 for name, f in models.QuotasLimits.model_fields.items() if f.is_required()}
     return {"uuid": uuid, "used": stats, "hard": stats, "limits": limits, **overrides}
+
+
+def image(url: str = "index.unikraft.io/org/app:latest", **overrides: Any) -> dict[str, Any]:
+    """An image, carrying every field the specification requires."""
+    return {
+        "url": url,
+        "created_at": "2026-01-01T00:00:00Z",
+        "initrd_or_rom": True,
+        "size_in_bytes": 4096,
+        "tags": ["latest"],
+        **overrides,
+    }
 
 
 def metro(code: str, *, name: str | None = None) -> dict[str, Any]:
