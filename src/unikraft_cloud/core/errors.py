@@ -41,8 +41,9 @@ class ResponseError:
     status: int | None = None
     #: Optional human-readable detail.
     message: str | None = None
-    #: The API's own error code, for an item of a request that failed.
-    code: int | None = None
+    #: The API's own error code: a number for an item of a platform request
+    #: that failed, a word such as ``"not_found"`` for a build service refusal.
+    code: int | str | None = None
     #: The UUID of the item that failed, when the API names it that way.
     uuid: str | None = None
     #: The name of the item that failed, when the API names it that way.
@@ -123,7 +124,11 @@ class NotFoundError(UnikraftCloudError):
 
 
 class AlreadyExistsError(UnikraftCloudError):
-    """A resource of that name is already there (409)."""
+    """The request conflicts with what is there (409).
+
+    A resource of that name already exists; or, on the build service, a
+    build still waiting or running cannot be deleted yet.
+    """
 
 
 class WaitTimeoutError(UnikraftCloudError, TimeoutError):
@@ -158,6 +163,9 @@ def error_for_status(
     if status in (401, 403):
         cls = AuthenticationError
     elif status == 404:
+        # The platform settles whether the resource or the route is missing
+        # where its envelope is read. The build service says `not_found` for
+        # both, so its 404 cannot claim the build is absent.
         cls = NotFoundError
     elif status == 409:
         cls = AlreadyExistsError
@@ -202,6 +210,17 @@ def parse_response_errors(body: Any) -> tuple[ResponseError, ...] | None:
         return None
     raw = body.get("errors")
     if not isinstance(raw, list) or not raw:
+        # The build API has no envelope: its failure is one `{"error":
+        # {"code", "message"}}`, with a word for its code.
+        error = body.get("error")
+        if isinstance(error, dict) and isinstance(error.get("code"), str):
+            message = error.get("message")
+            return (
+                ResponseError(
+                    message=message if isinstance(message, str) else None,
+                    code=error["code"],
+                ),
+            )
         return None
     errors: list[ResponseError] = []
     for entry in raw:
@@ -218,9 +237,18 @@ def parse_response_errors(body: Any) -> tuple[ResponseError, ...] | None:
 
 
 def envelope_message(body: Any) -> str | None:
-    """Read the envelope's ``message``, if it has a usable one."""
+    """Read the envelope's ``message``, if it has a usable one.
+
+    The build API has no envelope: its failure is ``{"error": {"code",
+    "message"}}``, so the message is read from there too.
+    """
     if isinstance(body, dict):
         message = body.get("message")
         if isinstance(message, str) and message:
             return message
+        error = body.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message:
+                return message
     return None

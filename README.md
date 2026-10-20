@@ -56,6 +56,7 @@ ukc = UnikraftCloud(
 | `metros` | The metros operations cover by default: `"all"`, one metro, or a list. Creating a resource needs exactly one, so name a metro somewhere when you create. |
 | `base_url` | Explicit platform API base URL. It settles where requests go, so it overrides `metro` and `UKC_METRO` alike, and pins the client to that one endpoint. |
 | `control_plane_url` | Override the control-plane API base URL. |
+| `build_url` | Override the build API base URL, an `http(s)://` URL. Falls back to `UKC_BUILD_SERVER`. |
 | `headers` | Extra headers sent with every request. |
 | `user_agent` | Override the default User-Agent. |
 | `http` | An `httpx.AsyncClient` to send through. Supplying one makes its lifetime yours. |
@@ -229,7 +230,8 @@ except UnikraftCloudError as err:
 `RateLimitError` (429) and `ServerError` (5xx) are raised for the statuses they name, and
 all subclass `UnikraftCloudError`. The API reports some failures inside an otherwise-200
 envelope, per item; those carry the API's own code on `err.errors[n].code` and are raised
-with the status that says the same thing.
+with the status that says the same thing. The build service refuses with a word instead,
+such as `not_found` or `too_many_builds`, on the same field.
 
 Two failures are caught before anything is sent, and are not `UnikraftCloudError`: a
 property the resource does not have is a `TypeError`, and a request missing a field the
@@ -286,7 +288,8 @@ except MetroFanoutError as err:
 ## Resources
 
 `instances`, `templates`, `images`, `volumes`, `services`, `certificates` and `users`
-hang off any scope — `ukc`, `ukc.metro("fra")` or `ukc.metros([...])`.
+hang off any scope — `ukc`, `ukc.metro("fra")` or `ukc.metros([...])`. `builds` hangs
+off `ukc` alone: the build service is global.
 
 Creating one takes the properties the API describes as keyword arguments, and a property
 it does not have is a `TypeError` rather than a field the server quietly ignores.
@@ -360,6 +363,33 @@ job = await fra.templates.get(name="worker-v3").clone(
     volumes=[{"size_mb": 512, "at": "/tmp"}],
     features=["delete-on-stop"],
 )
+```
+
+### Builds
+
+A build runs on the remote build service, in a builder of your own account, from
+sources the builder fetches itself: a git repository or a tarball, never a directory on
+this machine. A create takes the properties the API describes; `kraftfile_from` reads
+the Kraftfile out of a source, and `image_output` pushes the image with your token.
+`logs()` follows the progress as buildkit events, every event once, asking again and
+skipping what it has seen when the stream is cut, and ends with the event that carries
+the `result` or the `error`: a failed build is that last event, not an exception.
+`plain_logs()` is the text `docker buildx build --progress=plain` prints, asked for
+once. The service is named by `build_url` or `UKC_BUILD_SERVER`, an `http(s)://` URL.
+
+```python
+from unikraft_cloud import git_source, image_output, kraftfile_from
+
+src = git_source("https://github.com/acme/app.git", "main", subdir="app")
+build = await ukc.builds.create(
+    kraftfile=kraftfile_from(src),
+    contexts={"context": src},
+    output=[image_output("index.unikraft.io/acme/app:1.2.3")],
+)
+async for event in build.logs():
+    if event.error:
+        raise SystemExit(f"build failed: {event.error.message}")
+build = await build.refresh()
 ```
 
 ## The sandbox plugin
@@ -469,12 +499,16 @@ async with PlatformApi(config) as api:
 - [`examples/sandbox.py`](examples/sandbox.py) — run commands and move files through the sandbox plugin
 - [`examples/templates.py`](examples/templates.py) — look an image up, prepare a template, clone it
 - [`examples/plumbing.py`](examples/plumbing.py) — the raw API on its own
+- [`examples/detached.py`](examples/detached.py) — build a git repository on the build service and push the image
+- [`examples/parallel.py`](examples/parallel.py) — several builds at once, followed side by side
 
 ## Development
 
-The `api/platform` and `api/controlplane` packages are generated from the OpenAPI
-specification by `openapi-gen`, pinned in the Makefile, using the templates in
-[`templates/`](templates). The sandbox plugin's plumbing
+The `api/platform`, `api/controlplane` and `api/build` packages are generated from
+the OpenAPI specifications by `openapi-gen`, pinned in the Makefile, using the
+templates in [`templates/`](templates). The progress stream of a build is the one
+operation the templates skip (`-v skip=...`): it is newline-delimited JSON or plain
+text, which `ukc.builds` reads by hand. The sandbox plugin's plumbing
 is generated elsewhere, by
 [plugin-sdk](https://github.com/unikraft-cloud/plugin-sdk) from the plugin's own
 specification, and installed as the `unikraft-cloud-plugin-sandbox-api` package.
@@ -490,7 +524,7 @@ and a `Request`-named schema that a response also carries fails to parse when th
 leaves a required field out.
 
 ```sh
-make generate    # regenerate the platform and control-plane plumbing from the specs
+make generate    # regenerate the platform, control-plane and build plumbing from the specs
 make lint        # ruff check + format --check
 make typecheck   # mypy
 make test        # pytest

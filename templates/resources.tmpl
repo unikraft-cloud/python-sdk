@@ -3,9 +3,12 @@
        platform and control-plane packages sit at api/<name>/, which the default
        fits; a package elsewhere passes `-v core=<path>`. */ -}}
 {{- $core := .Var "core" "...core" -}}
+{{- /* The operations named in `skip`, separated by colons, are left to
+       hand-written code: a stream the templates cannot return. */ -}}
+{{- $skip := splitList ":" (.Var "skip" "") -}}
 {{- /* A class is rendered per tag, so an operation without one would be
        dropped from every class in silence. */ -}}
-{{- range $op := $ops }}{{ if not $op.Operation.Tags }}
+{{- range $op := $ops }}{{ if has $op.Operation.OperationID $skip }}{{ continue }}{{ end }}{{ if not $op.Operation.Tags }}
 {{- fail (printf "%s %s has no tag, so no generated class can expose it" $op.Method $op.Path) }}
 {{- end }}{{ end -}}
 {{- /* A tag names a module and a class, so two tags that normalise alike would
@@ -34,7 +37,7 @@
 {{- $names = append $names $key -}}
 {{- end -}}
 {{- $methods := list -}}
-{{- range $op := $ops -}}
+{{- range $op := $ops -}}{{ if has $op.Operation.OperationID $skip }}{{ continue }}{{ end }}
 {{- if has $tag $op.Operation.Tags -}}
 {{- $method := pySafeName (snakecase $op.Operation.OperationID) -}}
 {{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $method) -}}
@@ -67,7 +70,7 @@
 {{- $text := false }}
 {{- /* Every type the methods render, to find Any and Literal in. */ -}}
 {{- $types := "" }}
-{{- range $op := $ops }}
+{{- range $op := $ops }}{{ if has $op.Operation.OperationID $skip }}{{ continue }}{{ end }}
 {{- if has $tag $op.Operation.Tags }}
 {{- if pathParameters $op }}{{ $quoted = true }}{{ end }}
 {{- range pathParameters $op }}{{ if and .Schema (not (.Schema.Value.Type.Is "string")) }}{{ $text = true }}{{ end }}{{ $types = printf "%s %s" $types (paramToPyType .) }}{{ end }}
@@ -89,7 +92,7 @@
 {{- $literal := regexMatch "\\bLiteral\\b" $types }}
 {{- /* Likewise the marker for lists sent as one comma-separated parameter. */ -}}
 {{- $csv := false }}
-{{- range $op := $ops }}
+{{- range $op := $ops }}{{ if has $op.Operation.OperationID $skip }}{{ continue }}{{ end }}
 {{- if has $tag $op.Operation.Tags }}
 {{- range queryParameters $op }}
 {{- if not .Schema }}
@@ -161,7 +164,7 @@ class {{ pascalcase $tag }}Api(ApiClient):
     Methods mirror the OpenAPI specification and return the raw response
     envelope. The idiomatic clients are built on top of this.
     """
-{{- range $op := $ops }}
+{{- range $op := $ops }}{{ if has $op.Operation.OperationID $skip }}{{ continue }}{{ end }}
 {{- if has $tag $op.Operation.Tags }}
 {{ template "method" $op }}
 {{- end }}
