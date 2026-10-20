@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.3.0 (2026-10-20)
 
 ### Added
 
@@ -11,6 +11,11 @@
   `image_output`. The service's refusals carry their code on
   `err.errors[0].code`. The plumbing is `ukc.api.build`, generated from
   `build.yaml`; `build_url` (or `UKC_BUILD_SERVER`) names the service.
+
+## 0.2.0 (2026-10-06)
+
+### Added
+
 - The sandbox plugin client: `sandbox()` on an instance handle runs commands,
   follows their output, feeds standard input and moves files, and `plugin(name)`
   on one addresses any other plugin. The plumbing is `ukc.api.plugins.sandbox`.
