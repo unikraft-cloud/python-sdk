@@ -39,6 +39,7 @@ def _no_ambient_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.delenv("UKC_TOKEN", raising=False)
     monkeypatch.delenv("UKC_METRO", raising=False)
+    monkeypatch.delenv("UKC_BUILD_SERVER", raising=False)
 
 
 #: A handler answering one request, at once or after awaiting something.

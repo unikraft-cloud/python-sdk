@@ -450,11 +450,17 @@ class ApiClient(_PoolOwner):
         except httpx.HTTPError as cause:
             raise self._network_error(request, cause) from cause
 
-    def _network_error(self, request: httpx.Request, cause: httpx.HTTPError) -> UnikraftCloudError:
-        return UnikraftCloudError(
-            f"Request to {request.url} failed: {describe_cause(cause)}",
-            kind="network",
-        )
+    def _network_error(
+        self, request: httpx.Request, cause: httpx.HTTPError, *, status: int | None = None
+    ) -> UnikraftCloudError:
+        # A failure once the headers had arrived keeps their status, so that a
+        # stream that broke off can be told from a service that never answered.
+        message = f"Request to {request.url} failed: {describe_cause(cause)}"
+        if status is not None and not httpx.codes.is_success(status):
+            # A refusal whose body broke off is still the refusal its status
+            # says: `except NotFoundError` and `err.status == 404` must agree.
+            return error_for_status(status, message)
+        return UnikraftCloudError(message, kind="network", status=status)
 
     async def request(
         self,
@@ -562,6 +568,7 @@ class ApiClient(_PoolOwner):
         base_url: str | None = None,
         timeout: TimeoutOption = UNSET,
         chunk_size: int | None = None,
+        media_type: str | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Yield a raw byte payload as it arrives, without holding it all in memory.
 
@@ -569,6 +576,8 @@ class ApiClient(_PoolOwner):
         and release the connection at once, with ``contextlib.aclosing`` or its
         ``aclose()``; a ``break`` alone leaves that to garbage collection. A failure
         is raised before the first chunk, exactly as :meth:`request_bytes` raises it.
+        A success whose ``Content-Type`` is not `media_type`, when one is given, is
+        a parse error rather than a payload: it is not what the caller reads.
         """
         request = self._build_request(
             method=method,
@@ -585,12 +594,19 @@ class ApiClient(_PoolOwner):
             if not response.is_success:
                 await response.aread()
                 self._raise_for_status(response, self._parse_json(response, request.url))
+            served = response.headers.get("content-type", "").split(";")[0].strip().lower()
+            if media_type is not None and served != media_type:
+                raise UnikraftCloudError(
+                    f"Expected {media_type} from {request.url}, got {served or 'no media type'}",
+                    kind="parse",
+                    status=response.status_code,
+                )
             async for chunk in response.aiter_bytes(chunk_size):
                 yield chunk
         except httpx.HTTPError as cause:
             # The headers arrived, so `_send` let this through; the body can still
             # fail mid-stream, and that is a network error like any other.
-            raise self._network_error(request, cause) from cause
+            raise self._network_error(request, cause, status=response.status_code) from cause
         finally:
             # Close on early return or raise so the connection is not left
             # dangling mid-stream.
@@ -646,7 +662,7 @@ class ApiClient(_PoolOwner):
         except httpx.HTTPError as cause:
             # The headers arrived, so `_send` let this through; the body can still
             # fail mid-stream, and that is a network error like any other.
-            raise self._network_error(request, cause) from cause
+            raise self._network_error(request, cause, status=response.status_code) from cause
         finally:
             # Close on early return or raise so the connection is not left
             # dangling mid-stream.

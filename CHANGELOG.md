@@ -4,6 +4,13 @@
 
 ### Added
 
+- The build API client: `ukc.builds` creates, lists, cancels and deletes
+  builds on the remote build service, follows their progress with `logs()`
+  (reconnecting and skipping what it has seen) and `plain_logs()`, and takes
+  its sources from `git_source`, `url_source`, `kraftfile_from` and
+  `image_output`. The service's refusals carry their code on
+  `err.errors[0].code`. The plumbing is `ukc.api.build`, generated from
+  `build.yaml`; `build_url` (or `UKC_BUILD_SERVER`) names the service.
 - The sandbox plugin client: `sandbox()` on an instance handle runs commands,
   follows their output, feeds standard input and moves files, and `plugin(name)`
   on one addresses any other plugin. The plumbing is `ukc.api.plugins.sandbox`.

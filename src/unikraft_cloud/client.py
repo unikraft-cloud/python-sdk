@@ -11,8 +11,16 @@ import httpx
 from typing_extensions import Self
 
 from .api import Api
-from .core.http import UNSET, ApiClientConfig, TimeoutOption, Unset, default_timeout
+from .core.http import (
+    UNSET,
+    ApiClientConfig,
+    TimeoutOption,
+    Unset,
+    default_timeout,
+    normalise_base_url,
+)
 from .core.metro import (
+    BUILD_BASE_URL,
     CONTROLPLANE_BASE_URL,
     DEFAULT_METRO,
     Metro,
@@ -22,6 +30,7 @@ from .core.metro import (
     metro_base_url,
 )
 from .core.session import Session, SessionConfig
+from .resources.builds import Builds
 from .resources.certificates import Certificates
 from .resources.images import Images
 from .resources.instances import Instances
@@ -80,7 +89,9 @@ class MetroClient(Scope):
         #: The metro these clients are pinned to.
         self.endpoint = endpoint
         #: The raw API surfaces, with the platform API pinned to this metro.
-        self.api = Api(session.platform.with_base_url(endpoint.base_url), session.control_plane)
+        self.api = Api(
+            session.platform.with_base_url(endpoint.base_url), session.control_plane, session.build
+        )
 
 
 class UnikraftCloud(Scope):
@@ -93,8 +104,8 @@ class UnikraftCloud(Scope):
     discovery.
 
     The raw, spec-shaped API stays available on :attr:`api`, and from
-    ``unikraft_cloud.api.platform``, ``unikraft_cloud.api.controlplane`` and
-    ``unikraft_cloud.api.plugins``.
+    ``unikraft_cloud.api.platform``, ``unikraft_cloud.api.controlplane``,
+    ``unikraft_cloud.api.build`` and ``unikraft_cloud.api.plugins``.
 
     The client owns a connection pool, so close it when you are done -- either with
     ``async with`` or by awaiting :meth:`aclose`.
@@ -120,6 +131,7 @@ class UnikraftCloud(Scope):
         metros: MetroScope | None = None,
         base_url: str | None = None,
         control_plane_url: str | None = None,
+        build_url: str | None = None,
         headers: Mapping[str, str] | None = None,
         user_agent: str | None = None,
         http: httpx.AsyncClient | None = None,
@@ -140,6 +152,8 @@ class UnikraftCloud(Scope):
             remains the target for operations that must pick a single metro.
         :param base_url: Explicit platform API base URL; overrides `metro`.
         :param control_plane_url: Override the control-plane API base URL.
+        :param build_url: Override the build API base URL, an ``http(s)://``
+            URL. Falls back to ``UKC_BUILD_SERVER``.
         :param headers: Extra headers sent with every request.
         :param user_agent: Override the default User-Agent.
         :param http: An httpx client to send through. Supplying one makes its
@@ -195,11 +209,18 @@ class UnikraftCloud(Scope):
         control_plane = platform.with_base_url(
             metro_base_url(control_plane_url or CONTROLPLANE_BASE_URL)
         )
+        build_url = build_url or os.environ.get("UKC_BUILD_SERVER") or BUILD_BASE_URL
+        # The build service is named by its URL alone, never by a metro code,
+        # so a bare host is a mistake rather than a metro to expand.
+        if not build_url.lower().startswith(("http://", "https://")):
+            raise ValueError(f"build_url must be an http(s):// URL; got {build_url!r}.")
+        build = platform.with_base_url(normalise_base_url(build_url))
 
         session = Session(
             SessionConfig(
                 platform=platform,
                 control_plane=control_plane,
+                build=build,
                 default_metro=default_metro,
                 named_metro=named,
                 pinned=(
@@ -211,8 +232,10 @@ class UnikraftCloud(Scope):
 
         #: The raw ("plumbing") API surfaces: ``api.platform`` (metro-scoped,
         #: pointing at the default metro unless a call passes ``base_url``),
-        #: ``api.controlplane`` and ``api.plugins``.
-        self.api = Api(platform, control_plane)
+        #: ``api.controlplane``, ``api.build`` and ``api.plugins``.
+        self.api = Api(platform, control_plane, build)
+        #: Builds on the build service, which is global: a scope does not apply.
+        self.builds = Builds(session)
         self._metro_clients: dict[str, MetroClient] = {}
 
     async def aclose(self) -> None:

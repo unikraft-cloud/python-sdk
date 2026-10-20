@@ -49,6 +49,17 @@ class Page(BaseModel):
     name: str | None = None
 
 
+class Broken(httpx.AsyncByteStream):
+    """A response body the connection resets after its first bytes."""
+
+    def __init__(self, head: bytes) -> None:
+        self.head = head
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self.head
+        raise httpx.ReadError("connection reset")
+
+
 class Client(ApiClient):
     """A stand-in for a generated client, exercising the transport directly."""
 
@@ -411,14 +422,9 @@ class TestRawBytes:
                 [chunk async for chunk in api.chunks()]
 
     async def test_a_stream_that_breaks_mid_body_is_a_network_error(self) -> None:
-        class Breaks(httpx.AsyncByteStream):
-            async def __aiter__(self) -> AsyncIterator[bytes]:
-                yield b"he"
-                raise httpx.ReadError("connection reset mid-body")
-
         recorder = Recorder(
             lambda request: httpx.Response(
-                200, stream=Breaks(), headers={"content-type": "application/octet-stream"}
+                200, stream=Broken(b"he"), headers={"content-type": "application/octet-stream"}
             )
         )
         async with client(recorder) as api:
@@ -513,14 +519,11 @@ class TestEventStreams:
         assert caught.value.status == 302
 
     async def test_a_stream_that_breaks_mid_body_is_a_network_error(self) -> None:
-        class Broken(httpx.AsyncByteStream):
-            async def __aiter__(self) -> Any:
-                yield b'data: {"n": 1}\n\n'
-                raise httpx.ReadError("connection reset")
-
         recorder = Recorder(
             lambda request: httpx.Response(
-                200, stream=Broken(), headers={"content-type": "text/event-stream"}
+                200,
+                stream=Broken(b'data: {"n": 1}\n\n'),
+                headers={"content-type": "text/event-stream"},
             )
         )
         async with client(recorder) as api:
@@ -529,7 +532,16 @@ class TestEventStreams:
                 async for event in api.events():
                     seen.append(event)
         assert seen == [{"n": 1}]
-        assert caught.value.kind == "network"
+        # The headers had arrived, so the status says the stream itself broke.
+        assert (caught.value.kind, caught.value.status) == ("network", 200)
+        assert "connection reset" in str(caught.value)
+
+    async def test_a_refusal_whose_body_breaks_off_is_still_the_refusal(self) -> None:
+        recorder = Recorder(lambda request: httpx.Response(403, stream=Broken(b'{"status": "err')))
+        async with client(recorder) as api:
+            with pytest.raises(AuthenticationError) as caught:
+                [event async for event in api.events()]
+        assert caught.value.status == 403
         assert "connection reset" in str(caught.value)
 
     async def test_breaking_early_releases_the_stream(self) -> None:
@@ -601,6 +613,7 @@ class TestApiSurfaces:
         )
         api = Api(config, config.with_base_url("https://cp.example"))
         assert api.platform.instances.http is api.controlplane.metros.http
+        assert api.platform.instances.http is api.build.builds.http
         await api.aclose()
         assert api.platform.instances.http.is_closed
 
