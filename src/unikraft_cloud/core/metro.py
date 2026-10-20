@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from .http import normalise_base_url
 
 __all__ = [
+    "BUILD_BASE_URL",
     "CONTROLPLANE_BASE_URL",
     "DEFAULT_METRO",
     "KNOWN_METROS",
@@ -56,6 +57,9 @@ MetroScope = Metro | Sequence[Metro]
 #: The control-plane API base URL. Unlike the platform API, the control plane is
 #: global (not metro-scoped).
 CONTROLPLANE_BASE_URL = "https://controlplane.unikraft.cloud"
+
+#: The build API base URL, global like the control plane's.
+BUILD_BASE_URL = "https://build.unikraft.cloud"
 
 _URL_SCHEME = re.compile(r"^https?://", re.IGNORECASE)
 

@@ -15,6 +15,7 @@ from ..api.controlplane.metros_gen import MetrosApi
 from .errors import UnikraftCloudError
 from .http import ApiClientConfig
 from .metro import (
+    BUILD_BASE_URL,
     Metro,
     MetroEndpoint,
     MetroScope,
@@ -46,6 +47,9 @@ class SessionConfig:
     #: there is nothing to discover, and fanning out would invent hostnames the
     #: caller never mentioned.
     pinned: MetroEndpoint | None = None
+    #: Transport config for the build API, which is global too. Omitted, the
+    #: platform's config pointed at the default build endpoint.
+    build: ApiClientConfig | None = None
 
 
 class Session:
@@ -60,6 +64,8 @@ class Session:
         self.platform = config.platform
         #: Control-plane transport config (the control plane is global).
         self.control_plane = config.control_plane
+        #: Build API transport config (the build service is global).
+        self.build = config.build or config.platform.with_base_url(BUILD_BASE_URL)
         #: The single endpoint every scope collapses to, when one was named.
         self.pinned = config.pinned
         #: The metro named for this client, the target of an operation that must

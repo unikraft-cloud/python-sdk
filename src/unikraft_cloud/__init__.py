@@ -5,12 +5,13 @@
 
 The idiomatic client is :class:`UnikraftCloud`. The raw, spec-shaped API stays
 available on ``ukc.api`` and from ``unikraft_cloud.api.platform``,
-``unikraft_cloud.api.controlplane`` and ``unikraft_cloud.api.plugins``.
+``unikraft_cloud.api.controlplane``, ``unikraft_cloud.api.build`` and
+``unikraft_cloud.api.plugins``.
 """
 
 from __future__ import annotations
 
-from .api import Api, ControlPlaneApi, PlatformApi, PluginsApi, SandboxApi
+from .api import Api, BuildApi, ControlPlaneApi, PlatformApi, PluginsApi, SandboxApi
 from .client import USER_AGENT, MetroClient, Scope, UnikraftCloud
 from .core.errors import (
     AlreadyExistsError,
@@ -44,6 +45,7 @@ from .core.http import (
     Unset,
 )
 from .core.metro import (
+    BUILD_BASE_URL,
     CONTROLPLANE_BASE_URL,
     DEFAULT_METRO,
     KNOWN_METROS,
@@ -70,6 +72,14 @@ from .plugins.sandbox import (
     PluginNotReadyError,
     Sandbox,
     SandboxFiles,
+)
+from .resources.builds import (
+    Build,
+    Builds,
+    git_source,
+    image_output,
+    kraftfile_from,
+    url_source,
 )
 from .resources.certificates import (
     Certificate,
@@ -129,6 +139,7 @@ from .resources.volumes import (
 __version__ = "0.2.0"
 
 __all__ = [
+    "BUILD_BASE_URL",
     "CONTROLPLANE_BASE_URL",
     "DEFAULT_METRO",
     "KNOWN_METROS",
@@ -142,6 +153,9 @@ __all__ = [
     "ApiClientConfig",
     "AttachedVolume",
     "AuthenticationError",
+    "Build",
+    "BuildApi",
+    "Builds",
     "CallOptions",
     "Certificate",
     "CertificateHandle",
@@ -249,9 +263,13 @@ __all__ = [
     "WaitedInstance",
     "__version__",
     "collect",
+    "git_source",
+    "image_output",
+    "kraftfile_from",
     "metro_base_url",
     "metro_endpoint",
     "or_absent",
     "paginate",
+    "url_source",
     "with_metro",
 ]
