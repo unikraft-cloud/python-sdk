@@ -2,11 +2,12 @@
 # Copyright (c) 2026, Unikraft GmbH. All rights reserved.
 #
 # Builds on the remote build service: a request names the sources, the
-# Kraftfile and the outputs, the build runs on a builder in the caller's own
-# account, and its progress can be followed from the start until it ends. The
-# service is global, so no metro scope applies. Every source is a git
-# repository or a tarball the builder fetches itself: a directory on this
-# machine would need a buildkit session, which the service does not take yet.
+# outputs and a Kraftfile, or no Kraftfile to build the context's Dockerfile
+# alone; the build runs on a builder in the caller's own account, and its
+# progress can be followed from the start until it ends. The service is
+# global, so no metro scope applies. Every source is a git repository or a
+# tarball the builder fetches itself: a directory on this machine would need
+# a buildkit session, which the service does not take yet.
 
 from __future__ import annotations
 
@@ -165,6 +166,8 @@ class Builds:
     async def create(self, *, timeout: TimeoutOption = UNSET, **spec: Any) -> Build:
         """Create a build from the properties the API describes; it runs whether or not followed.
 
+        Without a ``kraftfile``, the build is the ``Dockerfile`` in the
+        ``context`` on the ``base-compat:latest`` runtime, for ``x86_64``.
         A property the API does not describe is a ``TypeError``. The service
         refuses a request that uses a part of the API it does not support yet
         with the code ``unsupported``, and a tenant with as many builds
