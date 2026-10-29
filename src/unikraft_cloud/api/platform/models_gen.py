@@ -228,8 +228,16 @@ MutableInstanceProperty = Literal[
 MutableTemplateInstanceOperation = Literal["set", "add", "del"]
 """Mutable template instance operations."""
 
-MutableTemplateInstanceProperty = Literal["tags", "delete_lock", "autokill"]
-"""The mutable properties of a template instance that can be updated."""
+MutableTemplateInstanceProperty = Literal[
+    "tags", "delete_lock", "autokill", "image", "roms", "plugins"
+]
+"""
+The mutable properties of a template instance that can be updated.
+Setting `image`, `roms`, or `plugins` updates the template in place.
+"""
+
+PluginAuthorizationType = Literal["userdb", "bearer"]
+"""How requests to a plugin endpoint are authenticated."""
 
 PullPolicy = Literal["always", "if_not_present", "never"]
 """PullPolicy defines when an image should be pulled."""
@@ -281,6 +289,18 @@ MutableServiceGroupProperty = Literal["services", "domains", "soft_limit", "hard
 
 ServiceProtocol = Literal["tcp", "udp"]
 """Protocol for a service."""
+
+UserResumeAction = Literal["standby", "start"]
+"""
+What resuming a user does with an instance that the suspension of the user
+brought to rest.
+
+| Action    | Description |
+|-----------|-------------|
+| `standby` | Autostart is enabled again. The instance is in standby and
+starts on the next incoming request. |
+| `start`   | The instance is started. |
+"""
 
 MutableTemplateVolumeOperation = Literal["set", "add", "del"]
 """Mutable template volume operations."""
@@ -589,6 +609,11 @@ class CreateAutoscaleConfigurationPolicyResponsePolicy(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
@@ -656,6 +681,11 @@ class CreateAutoscaleConfigurationsResponseConfigurationsResponse(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
@@ -770,6 +800,11 @@ class DeleteAutoscaleConfigurationsResponseServiceGroup(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
@@ -900,6 +935,11 @@ class GetAutoscaleConfigurationsResponseServiceGroup(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     enabled: bool | None = None
     """If the autoscale configuration is enabled."""
     min_size: int | None = None
@@ -967,6 +1007,11 @@ class ServiceGroupTemplate(BaseModel):
     """The UUID of the template used for the autoscale configuration."""
     name: str | None = None
     """The name of the template used for the autoscale configuration."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
 
 
 class Certificate(BaseModel):
@@ -988,6 +1033,11 @@ class Certificate(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     created_at: datetime | None = None
     """The time the certificate was created."""
     common_name: str | None = None
@@ -1053,7 +1103,7 @@ class Certificate(BaseModel):
     """
     validation: CertificateValidation | None = None
     """Validation status when state is pending."""
-    service_groups: list[ID] | None = None
+    service_groups: list[ResourceID] | None = None
     """Service groups using this certificate."""
 
 
@@ -1083,12 +1133,13 @@ class CreateCertificateRequest(BaseModel):
 
     name: str | None = None
     """
-    The name of the certificate.
-
-    This is a human-readable name that can be used to identify the certificate.
-    The name must be unique within the context of your account. If no name is
-    specified, a random name is generated for you. The name can also be used
-    to identify the certificate in API calls.
+    The name of the resource. If not provided, a random name is generated.
+    The name must be unique within the context of your account.
+    """
+    node: str | None = None
+    """
+    The name of the node to place the resource on. If not provided, the
+    platform picks one. Only accepted on metros that span multiple nodes.
     """
     cn: str | None = None
     """
@@ -1200,6 +1251,11 @@ class DeleteCertificatesResponseDeletedCertificate(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
 
 
 class GetCertificatesResponse(BaseModel):
@@ -1324,21 +1380,6 @@ class UpdateCertificatesResponseData(BaseModel):
     certificates: list[Certificate] | None = None
 
 
-class ID(BaseModel):
-    """Common identity fields for a resource."""
-
-    # Fields the specification does not describe are kept rather than dropped,
-    # so a newly added one survives a round trip and does not break this client.
-    # Every field is optional: one response shape serves several requests, and a
-    # summary listing or a failed bulk item carries only some of them.
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-    uuid: str | None = None
-    """The UUID of the resource."""
-    name: str | None = None
-    """The human-readable name of the resource."""
-
-
 class InlineFile(BaseModel):
     """An inline file entry represents a single file within an image."""
 
@@ -1369,6 +1410,26 @@ class NameOrUUID(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The name of the resource."""
+
+
+class ResourceID(BaseModel):
+    """Identity fields for a resource, including the node it is placed on."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
 
 
 class ResponseError(BaseModel):
@@ -1693,6 +1754,11 @@ class CheckpointHistoryEntry(BaseModel):
     """The UUID of the checkpoint."""
     name: str | None = None
     """The name of the checkpoint."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     created_at: datetime | None = None
     """The time the checkpoint was created."""
 
@@ -1710,6 +1776,11 @@ class CreateCheckpointInstancesRequestItem(BaseModel):
     """The source instance to create a checkpoint from (by name or UUID)."""
     name: str | None = None
     """The name of the checkpoint. If not provided, a name will be generated."""
+    node: str | None = None
+    """
+    The name of the node to place the checkpoint on. Must be the node of the
+    source instance. Only accepted on metros that span multiple nodes.
+    """
     timeout_s: int | None = None
     """
     Timeout in seconds to wait for the checkpoint to be created.
@@ -1764,6 +1835,11 @@ class CreateCheckpointInstancesResponseCheckpointInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     state: InstanceState | None = None
     """The current state of the checkpoint."""
 
@@ -1792,10 +1868,13 @@ class CreateInstanceRequest(BaseModel):
 
     name: str | None = None
     """
-    The name of the instance.
-
-    If not provided, a random name will be generated. The name must be
-    unique.
+    The name of the resource. If not provided, a random name is generated.
+    The name must be unique within the context of your account.
+    """
+    node: str | None = None
+    """
+    The name of the node to place the resource on. If not provided, the
+    platform picks one. Only accepted on metros that span multiple nodes.
     """
     image: str | ImageSpec | None = None
     """
@@ -1811,6 +1890,24 @@ class CreateInstanceRequest(BaseModel):
     """Environment variables to set for the instance."""
     memory_mb: int | None = None
     """Memory in MB to allocate for the instance. Default is 128."""
+    min_memory_mb: int | None = None
+    """
+    Lower bound in MB for memory vertical scaling. Setting this or
+    `max_memory_mb` enables memory vertical scaling, which is only supported
+    by microVM instances. The instance boots with this amount of memory, and
+    `memory_mb` selects the initial allocation within the bounds, defaulting
+    to `min_memory_mb`. Must be lower than `max_memory_mb`, and within the
+    user's memory limits. Cannot be used with templates that have a
+    snapshot, `branch_from` or `checkpoint`.
+    """
+    max_memory_mb: int | None = None
+    """
+    Upper bound in MB for memory vertical scaling. Setting this or
+    `min_memory_mb` enables memory vertical scaling. Defaults to the user's
+    maximum memory limit. Must be higher than `min_memory_mb` by at least
+    the platform's memory block size. Cannot be used with templates that
+    have a snapshot, `branch_from` or `checkpoint`.
+    """
     service_group: CreateInstanceRequestServiceGroup | None = None
     """
     The service group configuration when creating an instance.
@@ -1855,6 +1952,23 @@ class CreateInstanceRequest(BaseModel):
     """
     vcpus: int | None = None
     """Number of vCPUs to allocate for the instance. Defaults to 1."""
+    min_vcpus: int | None = None
+    """
+    Lower bound for vCPU vertical scaling. Setting this or `max_vcpus`
+    enables vCPU vertical scaling, which is only supported by microVM
+    instances. The instance boots with this number of vCPUs, and `vcpus`
+    selects the initial allocation within the bounds, defaulting to
+    `min_vcpus`. Must be lower than `max_vcpus`, and within the user's vCPU
+    limits. Cannot be used with templates that have a snapshot,
+    `branch_from` or `checkpoint`.
+    """
+    max_vcpus: int | None = None
+    """
+    Upper bound for vCPU vertical scaling. Setting this or `min_vcpus`
+    enables vCPU vertical scaling. Defaults to the user's maximum vCPU
+    limit. Must be higher than `min_vcpus`. Cannot be used with templates
+    that have a snapshot, `branch_from` or `checkpoint`.
+    """
     wait_timeout_ms: int | None = None
     """
     Deprecated: Use `timeout_s` instead. Timeout in milliseconds to
@@ -2136,6 +2250,13 @@ class CreateInstanceRequestPlugin(BaseModel):
     `init` program on `STDIN`. Any JSON value works, including a string, a
     number, or an object.
     """
+    authorization: PluginAuthorization | None = None
+    """
+    How requests to the plugin endpoint are authenticated. Without it, the
+    platform API token of a user with access to the instance (`userdb`) is
+    required. The platform checks the token and strips it before forwarding
+    the request to the plugin.
+    """
 
 
 class CreateInstanceRequestRom(BaseModel):
@@ -2400,6 +2521,11 @@ class CreateTemplateInstancesResponseTemplateInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     state: InstanceState | None = None
     """The current state of the instance."""
 
@@ -2447,6 +2573,11 @@ class DeleteCheckpointInstancesResponseCheckpointInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
 
 
 class DeleteCheckpointInstancesResponseData(BaseModel):
@@ -2568,6 +2699,11 @@ class DeleteInstancesResponseInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     previous_state: str | None = None
     """The previous state of the instance before it was deleted."""
 
@@ -2627,6 +2763,11 @@ class DeleteTemplateInstancesResponseTemplateInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
 
 
 class GetCheckpointHistoryResponse(BaseModel):
@@ -2685,6 +2826,11 @@ class GetCheckpointHistoryResponseInstanceHistory(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     history: list[CheckpointHistoryEntry] | None = None
     """The checkpoint history entries."""
 
@@ -2834,6 +2980,11 @@ class GetInstancesLogsResponseLoggedInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     output: str | None = None
     """Base64 encoded log output of the instance."""
     available: GetInstancesLogsResponseAvailable | None = None
@@ -2915,6 +3066,11 @@ class GetInstancesMetricsResponseInstanceMetrics(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     rss_bytes: int | None = None
     """
     Resident set size of the VMM in bytes.
@@ -3085,6 +3241,11 @@ class Instance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     created_at: datetime | None = None
     """The time the instance was created."""
     state: InstanceState | None = None
@@ -3109,11 +3270,41 @@ class Instance(BaseModel):
     total amount of memory that is available to the instance for its
     operations.
     """
+    boot_memory_mb: int | None = None
+    """
+    The amount of memory in megabytes the instance boots with. Only present
+    if memory vertical scaling is enabled for the instance.
+    """
+    min_memory_mb: int | None = None
+    """
+    The lower bound of memory vertical scaling in megabytes. Only present if
+    memory vertical scaling is enabled for the instance.
+    """
+    max_memory_mb: int | None = None
+    """
+    The upper bound of memory vertical scaling in megabytes. Only present if
+    memory vertical scaling is enabled for the instance.
+    """
     vcpus: int | None = None
     """
     The number of vCPUs allocated for the instance. This is the total
     number of virtual CPUs that are available to the instance for its
     operations.
+    """
+    boot_vcpus: int | None = None
+    """
+    The number of vCPUs the instance boots with. Only present if vCPU
+    vertical scaling is enabled for the instance.
+    """
+    min_vcpus: int | None = None
+    """
+    The lower bound of vCPU vertical scaling. Only present if vCPU vertical
+    scaling is enabled for the instance.
+    """
+    max_vcpus: int | None = None
+    """
+    The upper bound of vCPU vertical scaling. Only present if vCPU vertical
+    scaling is enabled for the instance.
     """
     args: list[str] | None = None
     """
@@ -3161,6 +3352,23 @@ class Instance(BaseModel):
     """
     retained_until: datetime | None = None
     """Time when the instance will be permanently deleted (for deleted instances)."""
+    start_prereq_time_us: int | None = None
+    """
+    The time taken for the start prerequisites to be fulfilled, measured in
+    microseconds from when the instance start was requested. Prerequisites
+    are the resources the instance needs before its VM can be launched: the
+    kernel and image being available locally, volumes being mounted, and a
+    template being ready to resume from.
+    Not used for template instances.
+    """
+    vmm_prestart_time_us: int | None = None
+    """
+    (Developer-only). The time taken between the start being requested and
+    the moment the VMM (Virtual Machine Monitor) process is spawned, measured
+    in microseconds. This field is primarily used for debugging and
+    performance analysis purposes.
+    Not used for template instances.
+    """
     vmm_start_time_us: int | None = None
     """
     (Developer-only). The time taken between the main controller and the
@@ -3208,7 +3416,17 @@ class Instance(BaseModel):
     Not used for template instances.
     """
     template_time_us: int | None = None
-    """Template creation time in microseconds."""
+    """
+    The time taken for the instance to reach the template state, measured in
+    microseconds from when the template was requested.
+    Only used for template instances.
+    """
+    checkpoint_time_us: int | None = None
+    """
+    The time taken for the instance to reach the checkpoint state, measured
+    in microseconds from when the checkpoint was requested.
+    Only used for checkpoint instances.
+    """
     stop_reason: int | None = None
     """
     The instance stop reason.
@@ -3436,6 +3654,8 @@ class Instance(BaseModel):
     """The DNS resolver configured inside the guest."""
     type: InstanceType | None = None
     """The type of virtual machine used to run the instance."""
+    clone_source: InstanceCloneSource | None = None
+    """The source this instance was cloned from, while the source exists."""
     gpus: list[InstanceGpu] | None = None
     """
     GPUs attached to the instance. Only present for instances of type
@@ -3467,6 +3687,23 @@ class InstanceAutokill(BaseModel):
     """
 
 
+class InstanceCloneSource(BaseModel):
+    """The instance, template, or checkpoint that an instance was cloned from."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str | None = None
+    """The UUID of the source."""
+    name: str | None = None
+    """The name of the source."""
+    node: str | None = None
+    """The name of the node the source is placed on."""
+
+
 class InstanceGpu(BaseModel):
     """A GPU attached to the instance."""
 
@@ -3495,6 +3732,8 @@ class InstanceNetworkInterface(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     uuid: str | None = None
+    node: str | None = None
+    """The name of the node the network interface is placed on."""
     private_ip: str | None = None
     """
     The private IP address of the network interface. This is the internal IP
@@ -3535,6 +3774,11 @@ class InstanceNetworkInterfaceRelay(BaseModel):
     """UUID of the relay interface."""
     name: str | None = None
     """Name of the relay interface."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     relay_dns: bool | None = None
     """
     Whether DNS traffic is relayed through this interface.
@@ -3597,6 +3841,34 @@ class InstancePlugin(BaseModel):
     `init` program on `STDIN`. Any JSON value works, including a string, a
     number, or an object.
     """
+    api_port: int | None = None
+    """
+    The port on the instance's address on which the plugin's API listens.
+    The platform picks it when the plugin is applied, so it lets a caller
+    that can reach the instance directly talk to the plugin without going
+    through the platform API.
+    """
+    authorization: InstancePluginAuthorization | None = None
+    """
+    The plugin's authorization method. Only present when it is not the
+    default (`userdb`).
+    """
+
+
+class InstancePluginAuthorization(BaseModel):
+    """
+    The authorization method of a plugin, as reported in the instance status.
+    The token is never returned.
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    type: PluginAuthorizationType | None = None
+    """The authorization method."""
 
 
 class InstanceRestartAttempt(BaseModel):
@@ -3709,6 +3981,11 @@ class InstanceServiceGroup(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     domains: list[ServiceGroupInstanceDomain] | None = None
     """The domain configuration for the service group."""
 
@@ -3758,6 +4035,11 @@ class InstanceVolume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     at: str | None = None
     """
     The mount point of the volume in the instance. This is the directory in
@@ -3802,6 +4084,24 @@ class NetworkInterfaceRelay(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The name of the resource."""
+
+
+class PluginAuthorization(BaseModel):
+    """Authorization for requests to a plugin endpoint."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    type: PluginAuthorizationType | None = None
+    """The authorization method."""
+    token: str | None = None
+    """
+    The token that requests must present as `Authorization: Bearer <token>`.
+    Required for, and only allowed with, the `bearer` type.
+    """
 
 
 class Schedule(BaseModel):
@@ -4009,6 +4309,11 @@ class StartInstancesResponseStartedInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     state: str | None = None
     """The current state of the instance after this request."""
     previous_state: str | None = None
@@ -4152,6 +4457,11 @@ class StopInstancesResponseStoppedInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     state: InstanceState | None = None
     """The current state of the instance."""
     previous_state: InstanceState | None = None
@@ -4252,6 +4562,11 @@ class SuspendInstancesResponseSuspendedInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     state: InstanceState | None = None
     """The current state of the instance."""
     previous_state: InstanceState | None = None
@@ -4377,6 +4692,11 @@ class UpdateCheckpointInstancesResponseCheckpointInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     id: str | None = None
     """The client-provided ID from the request."""
 
@@ -4434,8 +4754,9 @@ class UpdateInstanceByUUIDRequestBody(BaseModel):
     - For "roms": array of ROM objects (with name and image fields) for SET/ADD,
     or array of ROM names for DEL
     - For "plugins": array of plugin objects (with name, image, and optional
-    config fields)
-    for SET/ADD. The deprecated `rom` field is accepted in place of `image`.
+    config and
+    authorization fields) for SET/ADD. The deprecated `rom` field is accepted in
+    place of `image`.
     - For "dependencies": array of instance identifiers (name or UUID)
     - For "sched_priority": SchedPriority enum value ("normal", "medium",
     "high", "admin")
@@ -4487,8 +4808,9 @@ class UpdateInstancesRequestItem(BaseModel):
     - For "roms": array of ROM objects (with name and image fields) for SET/ADD,
     or array of ROM names for DEL
     - For "plugins": array of plugin objects (with name, image, and optional
-    config fields)
-    for SET/ADD. The deprecated `rom` field is accepted in place of `image`.
+    config and
+    authorization fields) for SET/ADD. The deprecated `rom` field is accepted in
+    place of `image`.
     - For "dependencies": array of instance identifiers (name or UUID)
     - For "sched_priority": SchedPriority enum value ("normal", "medium",
     "high", "admin")
@@ -4552,6 +4874,11 @@ class UpdateInstancesResponseUpdatedInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     id: str | None = None
     """The client-provided ID from the request."""
 
@@ -4576,6 +4903,9 @@ class UpdateTemplateInstanceByUUIDRequestBody(BaseModel):
     - For "tags": array of strings
     - For "delete_lock": boolean
     - For "autokill": object with time_ms field
+    - For "image": image reference string or object (SET only)
+    - For "roms": array of ROM objects (SET only)
+    - For "plugins": array of plugin objects (SET only)
     """
 
 
@@ -4605,6 +4935,9 @@ class UpdateTemplateInstancesRequestItem(BaseModel):
     - For "tags": array of strings
     - For "delete_lock": boolean
     - For "autokill": object with time_ms field
+    - For "image": image reference string or object (SET only)
+    - For "roms": array of ROM objects (SET only)
+    - For "plugins": array of plugin objects (SET only)
     """
 
 
@@ -4663,6 +4996,11 @@ class UpdateTemplateInstancesResponseTemplateInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     id: str | None = None
     """Client-provided operation ID."""
 
@@ -4780,6 +5118,11 @@ class WaitInstancesResponseWaitedInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     state: InstanceState | None = None
     """The current state of the instance."""
 
@@ -4855,10 +5198,13 @@ class CreateServiceGroupRequest(BaseModel):
 
     name: str | None = None
     """
-    Name of the service group. This is a human-readable name that can be used
-    to identify the service group. The name must be unique within the context
-    of your account. If no name is specified, a random name is generated for
-    you. The name can also be used to identify the service group in API calls.
+    The name of the resource. If not provided, a random name is generated.
+    The name must be unique within the context of your account.
+    """
+    node: str | None = None
+    """
+    The name of the node to place the resource on. If not provided, the
+    platform picks one. Only accepted on metros that span multiple nodes.
     """
     services: list[Service]
     """Services to expose. At least one service is required."""
@@ -5010,6 +5356,11 @@ class DeleteServiceGroupsResponseDeletedServiceGroup(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     status: ResponseStatus | None = None
     """The status of the response."""
     message: str | None = None
@@ -5160,6 +5511,11 @@ class ServiceGroup(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     created_at: datetime | None = None
     """The time the service was created."""
     persistent: bool | None = None
@@ -5246,6 +5602,11 @@ class ServiceGroupInstance(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
 
 
 class UpdateServiceGroupByUUIDRequestBody(BaseModel):
@@ -5383,6 +5744,11 @@ class UpdateServiceGroupsResponseUpdatedServiceGroup(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     id: str | None = None
     """The client-provided ID from the request."""
     status: ResponseStatus | None = None
@@ -5508,6 +5874,279 @@ class QuotasStats(BaseModel):
     """Total size of all volumes in megabytes."""
 
 
+class ResumeUsersRequestItem(BaseModel):
+    """A single request item to resume a user account."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str
+    """The UUID of the user."""
+
+
+class ResumeUsersResponse(BaseModel):
+    """
+    The response message for resuming one or more user account(s) given their
+    UUID(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: ResumeUsersResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class ResumeUsersResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    users: list[ResumeUsersResponseResumedUser] | None = None
+
+
+class ResumeUsersResponseResumedInstance(BaseModel):
+    """An instance that a resume users operation restored."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
+    state: InstanceState | None = None
+    """The current state of the instance."""
+    previous_state: InstanceState | None = None
+    """
+    The previous state of the instance before the resume operation was
+    invoked.
+    """
+    on_resume: UserResumeAction | None = None
+    """What the resume operation did with this instance."""
+
+
+class ResumeUsersResponseResumedUser(BaseModel):
+    """Per-item result for a resume users operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
+    suspended: bool | None = None
+    """
+    Whether the user account is still suspended after this request, for
+    example because it was suspended again concurrently.
+    """
+    instances: list[ResumeUsersResponseResumedInstance] | None = None
+    """
+    The instances of the user that were restored, as recorded when the user
+    was suspended. Instances that had nothing to restore are not listed. An
+    instance that failed to start keeps its record, so a later resume tries
+    again.
+    """
+
+
+class SuspendUserByUUIDRequestBody(BaseModel):
+    """Parameters for suspending a user account."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    suspend_instances: bool | None = None
+    """
+    Whether to also bring all instances of the user to rest. Autostart is
+    disabled, running instances are suspended (or stopped if they cannot be
+    suspended, or if they only return to standby and are not stateful), and
+    pending restarts are cancelled. Instances that are draining, stopping, or
+    in a start-stop cycle finish that transition first. Booting instances are
+    brought to rest once they are running. Without this flag only the account
+    is suspended and its instances are left as they are.
+    """
+
+
+class SuspendUsersRequestItem(BaseModel):
+    """A single request item to suspend a user account."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # A field the specification requires is required here too, so a request
+    # missing one fails at construction rather than at the server.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    uuid: str
+    """The UUID of the user."""
+    suspend_instances: bool | None = None
+    """
+    Whether to also bring all instances of the user to rest. Autostart is
+    disabled, running instances are suspended (or stopped if they cannot be
+    suspended, or if they only return to standby and are not stateful), and
+    pending restarts are cancelled. Instances that are draining, stopping, or
+    in a start-stop cycle finish that transition first. Booting instances are
+    brought to rest once they are running. Without this flag only the account
+    is suspended and its instances are left as they are.
+    """
+
+
+class SuspendUsersResponse(BaseModel):
+    """
+    The response message for suspending one or more user account(s) given their
+    UUID(s).
+    """
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """The status of the response."""
+    message: str | None = None
+    """An optional message providing additional information about the status."""
+    data: SuspendUsersResponseData | None = None
+    """The response data for this request."""
+    errors: list[ResponseError] | None = None
+    """A list of errors which may have occurred during the request."""
+    op_time_us: int | None = None
+    """The operation time in microseconds."""
+
+
+class SuspendUsersResponseData(BaseModel):
+    """The response data for this request."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    users: list[SuspendUsersResponseSuspendedUser] | None = None
+
+
+class SuspendUsersResponseSuspendedInstance(BaseModel):
+    """An instance that a suspend users operation brought to rest."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
+    state: InstanceState | None = None
+    """The current state of the instance."""
+    previous_state: InstanceState | None = None
+    """
+    The previous state of the instance before the suspend operation was
+    invoked.
+    """
+    on_resume: UserResumeAction | None = None
+    """
+    What resuming the user will do with this instance. Absent if the
+    instance was already at rest and resuming the user leaves it unchanged.
+    """
+
+
+class SuspendUsersResponseSuspendedUser(BaseModel):
+    """Per-item result for a suspend users operation."""
+
+    # Fields the specification does not describe are kept rather than dropped,
+    # so a newly added one survives a round trip and does not break this client.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: ResponseStatus | None = None
+    """Indicates whether the operation was successful for this item."""
+    message: str | None = None
+    """An optional message providing additional information."""
+    error: int | None = None
+    """An optional error code."""
+    uuid: str | None = None
+    """The UUID of the resource."""
+    name: str | None = None
+    """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
+    suspended: bool | None = None
+    """Whether the user account is suspended after this request."""
+    instances: list[SuspendUsersResponseSuspendedInstance] | None = None
+    """
+    The instances of the user that were brought to rest. Only present if
+    `suspend_instances` was set in the request.
+    """
+
+
 class AttachVolumeByUUIDRequestBody(BaseModel):
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
@@ -5599,6 +6238,11 @@ class AttachVolumesResponseAttachedVolume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
 
 
 class AttachVolumesResponseData(BaseModel):
@@ -5720,6 +6364,11 @@ class CloneVolumesResponseVolume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     state: VolumeState | None = None
     """The state of the volume."""
 
@@ -5777,6 +6426,11 @@ class CreateTemplateVolumesResponseTemplateVolume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     state: VolumeState | None = None
     """The state of the volume."""
 
@@ -5791,6 +6445,15 @@ class CreateVolumeRequest(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     name: str | None = None
+    """
+    The name of the resource. If not provided, a random name is generated.
+    The name must be unique within the context of your account.
+    """
+    node: str | None = None
+    """
+    The name of the node to place the resource on. If not provided, the
+    platform picks one. Only accepted on metros that span multiple nodes.
+    """
     size_mb: int | None = None
     host_path: str | None = None
     template: NameOrUUID | None = None
@@ -5855,6 +6518,11 @@ class CreateVolumeResponseVolume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     state: VolumeState | None = None
     """The state of the volume."""
 
@@ -5914,6 +6582,11 @@ class DeleteTemplateVolumesResponseTemplateVolume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
 
 
 class DeleteVolumesResponse(BaseModel):
@@ -5971,6 +6644,11 @@ class DeleteVolumesResponseDeletedVolume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
 
 
 class DetachVolumeByUUIDRequestBody(BaseModel):
@@ -6062,6 +6740,11 @@ class DetachVolumesResponseDetachedVolume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
 
 
 class GetTemplateVolumesResponse(BaseModel):
@@ -6277,6 +6960,11 @@ class UpdateTemplateVolumesResponseTemplateVolume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     id: str | None = None
     """The client-provided ID from the request."""
 
@@ -6422,6 +7110,11 @@ class UpdateVolumesResponseUpdatedVolume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     id: str | None = None
     """The client-provided ID from the request."""
 
@@ -6445,6 +7138,11 @@ class Volume(BaseModel):
     """The UUID of the resource."""
     name: str | None = None
     """The human-readable name of the resource."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     created_at: datetime | None = None
     """The time the volume was created."""
     state: VolumeState | None = None
@@ -6525,6 +7223,8 @@ class VolumeInstanceID(BaseModel):
     your account. If no name is specified, a random name is generated for
     you. The name can also be used to identify the instance in API calls.
     """
+    node: str | None = None
+    """The name of the node the instance is placed on."""
 
 
 class VolumeInstanceMount(BaseModel):
@@ -6540,6 +7240,11 @@ class VolumeInstanceMount(BaseModel):
     """The UUID of the instance that the volume is mounted in."""
     name: str | None = None
     """The name of the instance that the volume is mounted in."""
+    node: str | None = None
+    """
+    The name of the node the resource is placed on. Only present on metros
+    that span multiple nodes.
+    """
     readonly: bool | None = None
     """Whether the volume is mounted read-only or read-write."""
 
@@ -6613,9 +7318,9 @@ for _model in (
     UpdateCertificatesRequestItem,
     UpdateCertificatesResponse,
     UpdateCertificatesResponseData,
-    ID,
     InlineFile,
     NameOrUUID,
+    ResourceID,
     ResponseError,
     GetImagesRequestTagOrDigest,
     GetImagesResponse,
@@ -6685,11 +7390,13 @@ for _model in (
     ImageSpec,
     Instance,
     InstanceAutokill,
+    InstanceCloneSource,
     InstanceGpu,
     InstanceNetworkInterface,
     InstanceNetworkInterfaceRelay,
     InstancePendingUpdate,
     InstancePlugin,
+    InstancePluginAuthorization,
     InstanceRestartAttempt,
     InstanceRom,
     InstanceScaleToZero,
@@ -6699,6 +7406,7 @@ for _model in (
     InstanceVolume,
     ItemAutokill,
     NetworkInterfaceRelay,
+    PluginAuthorization,
     Schedule,
     ServiceGroupInstanceDomain,
     StartInstanceByUUIDRequestBody,
@@ -6765,6 +7473,17 @@ for _model in (
     QuotasResponse,
     QuotasResponseData,
     QuotasStats,
+    ResumeUsersRequestItem,
+    ResumeUsersResponse,
+    ResumeUsersResponseData,
+    ResumeUsersResponseResumedInstance,
+    ResumeUsersResponseResumedUser,
+    SuspendUserByUUIDRequestBody,
+    SuspendUsersRequestItem,
+    SuspendUsersResponse,
+    SuspendUsersResponseData,
+    SuspendUsersResponseSuspendedInstance,
+    SuspendUsersResponseSuspendedUser,
     AttachVolumeByUUIDRequestBody,
     AttachVolumesRequestItem,
     AttachVolumesResponse,
