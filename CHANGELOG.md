@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.0 (2026-10-31)
+
+### Added
+
+- Users: `ukc.api.platform.users` suspends and resumes accounts with
+  `suspend_users`, `suspend_user_by_uuid`, `resume_users` and
+  `resume_user_by_uuid`; `suspend_instances` brings the user's instances to
+  rest too.
+- Instances: a create takes vertical scaling bounds (`min_memory_mb`,
+  `max_memory_mb`, `min_vcpus`, `max_vcpus`), and an `Instance` reports them
+  with `boot_memory_mb`, `boot_vcpus`, the `clone_source` it was cloned from,
+  and its start and checkpoint timings (`start_prereq_time_us`,
+  `vmm_prestart_time_us`, `checkpoint_time_us`).
+- Plugins: a plugin on a create takes an `authorization`, such as a bearer
+  `token`, and an `InstancePlugin` reports its `authorization` and the
+  `api_port` its API listens on.
+- Nodes: on a metro that spans several nodes, resources report the `node`
+  they are placed on, and creates of instances, volumes, services,
+  certificates and checkpoints can name one.
+- Builds: a `Build` carries the `kraftfile` and `contexts` of its request.
+
+### Changed
+
+- The plumbing's `ID` model is `ResourceID`, and carries the `node` too.
+- A build without a `kraftfile` builds the `Dockerfile` of its context on the
+  `base-compat:latest` runtime, for `x86_64`.
+- `BuildContexts.context` is optional, so `ukc.builds.create` no longer
+  refuses a request without one itself; the service does.
+
 ## 0.3.0 (2026-10-20)
 
 ### Added
