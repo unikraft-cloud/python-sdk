@@ -371,6 +371,8 @@ A build runs on the remote build service, in a builder of your own account, from
 sources the builder fetches itself: a git repository or a tarball, never a directory on
 this machine. A create takes the properties the API describes; `kraftfile_from` reads
 the Kraftfile out of a source, and `image_output` pushes the image with your token.
+Without a `kraftfile`, the build is the `Dockerfile` in the context on the
+`base-compat:latest` runtime.
 `logs()` follows the progress as buildkit events, every event once, asking again and
 skipping what it has seen when the stream is cut, and ends with the event that carries
 the `result` or the `error`: a failed build is that last event, not an exception.

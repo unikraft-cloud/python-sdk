@@ -116,6 +116,16 @@ class Build(BaseModel):
     """The state of the build."""
     builder: str | None = None
     """The name of the builder the build runs on."""
+    kraftfile: Kraftfile | None = None
+    """
+    The Kraftfile of the request. Absent for a build without one, and for a
+    build from before the service kept its requests.
+    """
+    contexts: BuildContexts | None = None
+    """
+    The contexts of the request, where the build gets its files from. Absent
+    for a build from before the service kept its requests.
+    """
     session: str | None = None
     """
     The path to attach the build's session at. Only present while the build is
@@ -147,11 +157,11 @@ class BuildContexts(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # A field the specification requires is required here too, so a request
-    # missing one fails at construction rather than at the server.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    context: Source
+    context: Source | None = None
     """
     The build context: the directory the Dockerfile is built in, and the
     directory relative paths in the Kraftfile resolve in.
@@ -220,8 +230,7 @@ class BuildOutput(BaseModel):
     volume: str | None = None
     """
     The name or UUID of an existing volume to import the built filesystem
-    into. Only valid for a plain image of a single platform. Not supported
-    yet.
+    into. Only valid for a build of a single platform. Not supported yet.
     """
     metro: str | None = None
     """
@@ -335,17 +344,18 @@ class CreateBuildRequest(BaseModel):
 
     kraftfile: Kraftfile | None = None
     """
-    The Kraftfile to build, which makes the build a Unikraft image. Without
-    one, the build is a plain image of `context`, built with the Dockerfile in
-    `dockerfile`.
+    The Kraftfile to build. Without one, the build uses a Kraftfile with
+    `runtime: base-compat:latest` and `rootfs: ./Dockerfile`, so its rootfs
+    is `contexts.context` built with the file `Dockerfile`, or with the one
+    that `contexts.dockerfile` gives.
     """
     contexts: BuildContexts
     """The contexts to build from."""
     platforms: list[str] | None = None
     """
     The platforms to build for. Only the architecture selects, so `x86_64` is
-    `linux/amd64`. Defaults to the targets of the Kraftfile or of its runtime,
-    or to the builder's own platform for a plain image.
+    `linux/amd64`. Defaults to the targets of the Kraftfile, or to `x86_64`
+    when it has none.
     """
     build_args: dict[str, str] | None = None
     """The values of the Dockerfile's `ARG`s, by name."""
@@ -537,8 +547,8 @@ class Source(BaseModel):
 
     # Fields the specification does not describe are kept rather than dropped,
     # so a newly added one survives a round trip and does not break this client.
-    # A field the specification requires is required here too, so a request
-    # missing one fails at construction rather than at the server.
+    # Every field is optional: one response shape serves several requests, and a
+    # summary listing or a failed bulk item carries only some of them.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     session: str | None = None

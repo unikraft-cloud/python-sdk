@@ -50,3 +50,79 @@ class UsersApi(ApiClient):
             base_url=base_url,
             timeout=timeout,
         )
+
+    async def resume_user_by_uuid(
+        self,
+        uuid: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> models.ResumeUsersResponse:
+        """Resume User by UUID"""
+        return await self.request(
+            models.ResumeUsersResponse,
+            method="PUT",
+            path=f"/v1/users/{quote(uuid, safe='')}/resume",
+            headers=headers,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    async def resume_users(
+        self,
+        *,
+        body: list[models.ResumeUsersRequestItem],
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> models.ResumeUsersResponse:
+        """Resume Users"""
+        return await self.request(
+            models.ResumeUsersResponse,
+            method="PUT",
+            path="/v1/users/resume",
+            body=body,
+            headers=headers,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    async def suspend_user_by_uuid(
+        self,
+        uuid: str,
+        *,
+        body: models.SuspendUserByUUIDRequestBody | None = None,
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> models.SuspendUsersResponse:
+        """Suspend User by UUID"""
+        return await self.request(
+            models.SuspendUsersResponse,
+            method="PUT",
+            path=f"/v1/users/{quote(uuid, safe='')}/suspend",
+            body=body,
+            headers=headers,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    async def suspend_users(
+        self,
+        *,
+        body: list[models.SuspendUsersRequestItem],
+        headers: Mapping[str, str] | None = None,
+        base_url: str | None = None,
+        timeout: TimeoutOption = UNSET,
+    ) -> models.SuspendUsersResponse:
+        """Suspend Users"""
+        return await self.request(
+            models.SuspendUsersResponse,
+            method="PUT",
+            path="/v1/users/suspend",
+            body=body,
+            headers=headers,
+            base_url=base_url,
+            timeout=timeout,
+        )
