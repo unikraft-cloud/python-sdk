@@ -14,14 +14,14 @@ jobs:
     steps:
       - name: format
         if: always()
-        uses: taskmedia/action-conventional-commits@v1.1.20
+        uses: taskmedia/action-conventional-commits@a708bda25c04fc82b2acd5eeeb88d97f9a19beb9 # v1.1.20
         with:
           types: "build|ci|docs|feat|fix|perf|refactor|style|test|revert|gomod|chore|sync"
           token: ${{ secrets.GH_PAT }}
 
       - name: length
         if: ${{ github.actor != 'dependabot' && github.actor != 'dependabot[bot]' }}
-        uses: gsactions/commit-message-checker@v2
+        uses: gsactions/commit-message-checker@16fa2d5de096ae0d35626443bcd24f1e756cafee # v2.0.0
         with:
           pattern: '((^(?=(?:.|\n)*(?:^|\n)\[\d\]: .{69,}(?:$|\n)(?:.|\n)*)(?:.|\n)*$)|(^(?!(?:.|\n)*(?:^|\n).{74,}(?:$|\n)(?:.|\n)*)(?:.|\n)*$))'
           flags: ''
@@ -33,7 +33,7 @@ jobs:
 
       - name: signed-off-by
         if: always()
-        uses: gsactions/commit-message-checker@v2
+        uses: gsactions/commit-message-checker@16fa2d5de096ae0d35626443bcd24f1e756cafee # v2.0.0
         with:
           pattern: '^Signed-off-by: .+ \<.+\@.+\..+\>$'
           error: 'Signed-off-by line is missing.'
@@ -47,7 +47,7 @@ jobs:
     steps:
       - name: title-format
         if: always()
-        uses: gsactions/commit-message-checker@v2
+        uses: gsactions/commit-message-checker@16fa2d5de096ae0d35626443bcd24f1e756cafee # v2.0.0
         with:
           pattern: '^(build|ci|docs|feat|fix|perf|refactor|style|test|revert|gomod|chore|sync)(\([\w\-\_\d]+\))?!?: '
           error: 'The PR title must follow the conventional commits format.'
@@ -58,7 +58,7 @@ jobs:
 
       - name: title-length
         if: ${{ github.actor != 'dependabot' && github.actor != 'dependabot[bot]' }}
-        uses: gsactions/commit-message-checker@v2
+        uses: gsactions/commit-message-checker@16fa2d5de096ae0d35626443bcd24f1e756cafee # v2.0.0
         with:
           pattern: '^(?!.{75,}).*'
           flags: ''
@@ -70,7 +70,7 @@ jobs:
 
       - name: description
         if: ${{ github.actor != 'dependabot' && github.actor != 'dependabot[bot]' }}
-        uses: gsactions/commit-message-checker@v2
+        uses: gsactions/commit-message-checker@16fa2d5de096ae0d35626443bcd24f1e756cafee # v2.0.0
         with:
           pattern: '^\S+( \S+)*$'
           error: 'The PR description must not be empty.'
