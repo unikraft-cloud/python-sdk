@@ -1,0 +1,35 @@
+version: 2
+
+updates:
+- package-ecosystem: uv
+  directory: /
+  schedule:
+    interval: weekly
+    day: sunday
+    time: '09:00'
+  groups:
+    uv-deps:
+      applies-to: version-updates
+      patterns:
+      - '*'
+    uv-security:
+      applies-to: security-updates
+      patterns:
+      - '*'
+
+- package-ecosystem: github-actions
+  directories:
+  - /
+  schedule:
+    interval: weekly
+    day: sunday
+    time: '09:00'
+  groups:
+    github-deps:
+      applies-to: version-updates
+      patterns:
+      - '*'
+    github-security:
+      applies-to: security-updates
+      patterns:
+      - '*'
