@@ -22,6 +22,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
+          version: 0.13.8
           enable-cache: true
 
       - name: Check the tag and the package agree on the version
@@ -46,7 +47,7 @@ jobs:
         run: uv build
 
       - name: Check metadata
-        run: uvx twine check dist/*
+        run: uvx twine@7.0.0 check dist/*
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
